@@ -45,6 +45,19 @@ class Worker:
         self._current_dialog_title: Optional[str] = None
         self._media_progress: dict[tuple[str, str], int] = {}
         self._media_labels: dict[tuple[str, str], str] = {}
+        self._cleanup_old_sessions()
+    
+    def _cleanup_old_sessions(self) -> None:
+        """Удаляет .DELETE_ME файлы и orphaned sessions при старте."""
+        import glob
+        
+        # Удаляем файлы, помеченные для удаления
+        for trash_file in glob.glob("*.DELETE_ME_*"):
+            try:
+                os.remove(trash_file)
+                print(f"[CLEANUP] Removed old trash: {trash_file}")
+            except Exception as e:
+                print(f"[CLEANUP] Failed to remove {trash_file}: {e}")
 
     def start(self) -> None:
         self.thread.start()
@@ -92,12 +105,79 @@ class Worker:
                 if not fut.done():
                     fut.set_result(None)
             self._pending_inputs.clear()
+        
+        # === ОТКЛЮЧЕНИЕ КЛИЕНТА ПЕРВЫМ (освобождает файлы) ===
         if self.client:
             try:
                 await self.client.disconnect()
+                # Даём время на освобождение файлов
+                await asyncio.sleep(0.5)
             except Exception:  # noqa: BLE001
                 pass
-        self._emit("status", message="Disconnected")
+        
+        # === АВТОУДАЛЕНИЕ SESSION-ФАЙЛОВ ===
+        import glob
+        import time
+        
+        session_files_deleted = []
+        session_files_failed = []
+        
+        for session_file in glob.glob("*.session*"):
+            # Попытка 1: Обычное удаление
+            try:
+                os.remove(session_file)
+                session_files_deleted.append(session_file)
+                self._emit("log", message=f"🗑️ Deleted: {session_file}")
+                continue
+            except PermissionError:
+                pass
+            except Exception as e:
+                self._emit("log", message=f"❌ Error deleting {session_file}: {e}")
+                session_files_failed.append(session_file)
+                continue
+            
+            # Попытка 2: Подождать и попробовать снова
+            try:
+                time.sleep(0.3)
+                os.remove(session_file)
+                session_files_deleted.append(session_file)
+                self._emit("log", message=f"🗑️ Deleted (retry): {session_file}")
+                continue
+            except Exception:
+                pass
+            
+            # Попытка 3: Переименовать для удаления при следующем запуске
+            try:
+                trash_name = f"{session_file}.DELETE_ME_{int(time.time())}"
+                os.rename(session_file, trash_name)
+                self._emit("log", message=f"🔄 Marked for deletion: {session_file}")
+                # Попытаемся удалить переименованный файл
+                try:
+                    os.remove(trash_name)
+                    session_files_deleted.append(session_file)
+                    self._emit("log", message=f"🗑️ Deleted (renamed): {session_file}")
+                except Exception:
+                    session_files_failed.append(session_file)
+                    self._emit("log", message=f"⚠️ Will be deleted on next start: {trash_name}")
+            except Exception as e:
+                session_files_failed.append(session_file)
+                self._emit("log", message=f"❌ Cannot process {session_file}: {e}")
+        
+        # Удаляем старые .DELETE_ME файлы из предыдущих запусков
+        for old_trash in glob.glob("*.DELETE_ME_*"):
+            try:
+                os.remove(old_trash)
+                self._emit("log", message=f"🗑️ Cleaned old trash: {old_trash}")
+            except Exception:
+                pass
+        
+        # Итоговое сообщение
+        if session_files_deleted:
+            self._emit("log", message=f"✅ Cleaned up {len(session_files_deleted)} session file(s)")
+        if session_files_failed:
+            self._emit("log", message=f"⚠️ {len(session_files_failed)} file(s) require restart to delete")
+        
+        self._emit("status", message="Disconnected (sessions cleaned)")
         self._emit("export_state", state="idle")
 
     async def _cmd_connect(
@@ -418,8 +498,9 @@ class App(tk.Tk):
         self.api_id_var = tk.StringVar()
         self.api_hash_var = tk.StringVar()
         self.phone_var = tk.StringVar()
-        self.session_var = tk.StringVar(value="deleteIt")
-        self.no_session_var = tk.BooleanVar(value=True)
+        # ═══════════════════════════════════════════════════
+        # УДАЛЕНО: session_var, no_session_var
+        # ═══════════════════════════════════════════════════
         self.anonymize_var = tk.BooleanVar(value=False)
         self.block_dangerous_var = tk.BooleanVar(value=True)
         self.batch_var = tk.StringVar(value=str(DEFAULT_PROGRESS_EVERY))
@@ -590,13 +671,19 @@ class App(tk.Tk):
         self.phone_entry = ttk.Entry(card, textvariable=self.phone_var)
         self.phone_entry.grid(row=7, column=0, sticky="ew", pady=(4, 12))
 
-        session_row = ttk.Frame(card, style="CardInner.TFrame")
-        session_row.grid(row=8, column=0, sticky="ew")
-        session_row.columnconfigure(0, weight=1)
-        ttk.Label(session_row, text="Session name", style="Body.TLabel").grid(row=0, column=0, sticky="w")
-        self.session_entry = ttk.Entry(session_row, textvariable=self.session_var)
-        self.session_entry.grid(row=1, column=0, sticky="ew", pady=(4, 8))
-        ttk.Checkbutton(card, text="Do not store session file", variable=self.no_session_var).grid(row=9, column=0, sticky="w")
+        # ═══════════════════════════════════════════════════
+        # УДАЛЕНО: session_row, session_entry, no_session_var
+        # ═══════════════════════════════════════════════════
+        
+        # Добавьте информационное сообщение
+        info_frame = ttk.Frame(card, style="CardInner.TFrame")
+        info_frame.grid(row=8, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(
+            info_frame, 
+            text="🔒 No session files will be saved\nYou'll need to enter code on each launch", 
+            style="Info.TLabel",
+            justify="left"
+        ).grid(row=0, column=0, sticky="w")
 
         self.connect_button = ttk.Button(card, text="Connect", style="Accent.TButton", command=self._on_connect)
         self.connect_button.grid(row=10, column=0, sticky="ew", pady=(18, 0))
@@ -1029,7 +1116,7 @@ class App(tk.Tk):
             self.pause_button.state(["disabled"])
             self.finish_button.state(["disabled"])
             self.pause_button.configure(text="Pause")
-
+            
     def _on_connect(self) -> None:
         try:
             api_id = int(self.api_id_var.get().strip())
@@ -1044,14 +1131,18 @@ class App(tk.Tk):
         if not phone:
             messagebox.showerror("Error", "Phone number is required", parent=self)
             return
-        session_name = None if self.no_session_var.get() else self.session_var.get().strip() or None
+        
+        # ═══════════════════════════════════════════════════
+        # УДАЛЕНО: вся логика с session_name
+        # ═══════════════════════════════════════════════════
+        
         self.status_var.set("Connecting...")
         self.worker.send_command(
             "connect",
             api_id=api_id,
             api_hash=api_hash,
             phone=phone,
-            session_name=session_name,
+            session_name=None,  # ← Всегда None
         )
 
     def _on_refresh(self) -> None:

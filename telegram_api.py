@@ -8,6 +8,7 @@ from typing import Awaitable, Callable, List, Optional, Union
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
+from telethon.sessions import StringSession  # ← ДОБАВИТЬ ЭТО
 
 log = logging.getLogger("telegram_api")
 
@@ -15,11 +16,14 @@ async def authorize(
     api_id: Optional[int] = None,
     api_hash: Optional[str] = None,
     phone: Optional[str] = None,
-    session_name: Optional[str] = None,
+    session_name: Optional[str] = None,  # Теперь игнорируется
     code_callback: Optional[Callable[..., Union[str, Awaitable[str], None]]] = None,
     password_callback: Optional[Callable[..., Union[str, Awaitable[str], None]]] = None,
 ) -> TelegramClient:
-    """Shared authorization helper for CLI (interactive) and GUI (callbacks)."""
+    """
+    Authorization helper that NEVER creates session files.
+    Always uses in-memory StringSession.
+    """
 
     def _stringify(value, field_name: str) -> Optional[str]:
         if value is None:
@@ -61,7 +65,14 @@ async def authorize(
     else:
         phone = _stringify(phone, "phone")
 
-    client = TelegramClient(session_name, api_id, api_hash)
+    # ═══════════════════════════════════════════════════
+    # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Всегда используем StringSession
+    # ═══════════════════════════════════════════════════
+    session = StringSession()  # ← Пустая строка = новая сессия в памяти
+    log.info("Using in-memory session (no files will be created)")
+    
+    client = TelegramClient(session, api_id, api_hash)
+    # ═══════════════════════════════════════════════════
 
     await client.connect()
     if not await client.is_user_authorized():
@@ -90,7 +101,6 @@ async def list_user_dialogs(client) -> List:
     Возвращает ВСЕ диалоги: users (личные), группы/супергруппы, каналы.
     """
     dialogs = await client.get_dialogs()
-    # отфильтруем всё «нужно» и прикрутим человекочитаемый тип
     res = []
     for d in dialogs:
         t = (
@@ -100,7 +110,7 @@ async def list_user_dialogs(client) -> List:
             else "other"
         )
         if t in {"user", "group", "channel"}:
-            d._tgdl_kind = t  # пометим на будущее (UI)
+            d._tgdl_kind = t
             res.append(d)
     log.info("Найдено диалогов: %s (users/groups/channels)", len(res))
     return res
