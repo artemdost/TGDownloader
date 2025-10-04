@@ -4,12 +4,16 @@ import sys
 import asyncio
 import logging
 from dotenv import load_dotenv
-
+from process_hardening import harden_process
 from telegram_api import authorize, list_user_dialogs
 from channel_data import dump_dialog_to_json_and_media
 from html_generator import generate_html
 
+# Apply process-level hardening before bootstrapping the app
+harden_process()
+
 # Configure logging with security considerations
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s:%(name)s:%(message)s",

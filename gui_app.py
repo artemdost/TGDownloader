@@ -12,6 +12,7 @@ from typing import Any, Optional
 import ctypes
 import hashlib
 
+from process_hardening import harden_process
 from channel_data import dump_dialog_to_json_and_media
 
 try:
@@ -24,6 +25,9 @@ except Exception:
 
 from html_generator import generate_html
 from telegram_api import authorize, list_user_dialogs
+
+# Apply crash-dump hardening in GUI mode as well
+harden_process()
 
 DEFAULT_PROGRESS_EVERY = 50
 
@@ -1198,8 +1202,9 @@ class App(tk.Tk):
 
     def _minimize_to_tray(self) -> None:
         if pystray is None or Image is None or ImageDraw is None:
-            messagebox.showinfo('Tray unavailable', 'pystray and Pillow are required for tray mode. Exiting instead.', parent=self)
-            self._on_exit()
+            messagebox.showinfo('Tray unavailable', 'pystray and Pillow are required for tray mode. Minimizing to taskbar instead.', parent=self)
+            self.iconify()
+            self.status_var.set('Minimized to taskbar (tray disabled)')
             return
         self.withdraw()
         self._start_tray_icon()
@@ -1455,3 +1460,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
