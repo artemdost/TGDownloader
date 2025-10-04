@@ -58,16 +58,31 @@ def _is_dangerous(doc, filename: str | None) -> bool:
     return False
 
 async def _download_one_message_media(
-    client, msg: Message, media_dir_abs: str, export_dir_abs: str, skip_dangerous: bool
+    client,
+    msg: Message,
+    media_dir_abs: str,
+    export_dir_abs: str,
+    skip_dangerous: bool,
+    media_event_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> list[dict]:
     """
-    Скачивает медиа и возвращает список объектов:
-      {"kind":"image"|"video"|"file"|"blocked", "path":"...", "thumb":"...", "name":"..."}
-    Если файл «опасный» и skip_dangerous=True — не скачиваем, кладём заглушку kind="blocked".
+    Download media from a message and return descriptor dicts:
+      {"kind": "image"|"video"|"file"|"blocked", "path": "...", "thumb": "...", "name": "..."}.
+    If skip_dangerous=True and the payload looks risky, nothing is downloaded and a blocked placeholder is returned.
     """
     items: list[dict] = []
     if not msg or not msg.media:
         return items
+
+    def _emit_media(stage: str, **details: Any) -> None:
+        if not media_event_cb:
+            return
+        payload: Dict[str, Any] = {"stage": stage, "message_id": getattr(msg, "id", None)}
+        payload.update(details)
+        try:
+            media_event_cb(payload)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("media_event callback failed: %s", exc)
 
     try:
         filename_hint = None
@@ -80,29 +95,49 @@ async def _download_one_message_media(
                     filename_hint = attr.file_name
                     break
 
-            if skip_dangerous and _is_dangerous(doc, filename_hint):
-                # заглушка вместо скачивания
-                items.append({
-                    "kind": "blocked",
-                    "name": filename_hint or "file",
-                    "reason": "dangerous-file-blocked"
-                })
-                return items
+        kind_guess = "file"
+        if is_document and doc:
+            mime = (doc.mime_type or "").lower()
+            if mime.startswith("video/"):
+                kind_guess = "video"
+            elif mime.startswith("image/"):
+                kind_guess = "image"
+            for attr in doc.attributes or []:
+                if isinstance(attr, DocumentAttributeVideo):
+                    kind_guess = "video"
+        elif getattr(msg, "photo", None):
+            kind_guess = "image"
 
-        # Скачиваем основной бинарь
+        if is_document and doc and skip_dangerous and _is_dangerous(doc, filename_hint):
+            name_hint = filename_hint or "file"
+            _emit_media("blocked", kind=kind_guess, name=name_hint, reason="dangerous")
+            items.append({
+                "kind": "blocked",
+                "name": name_hint,
+                "reason": "dangerous-file-blocked"
+            })
+            return items
+
+        name_hint = filename_hint or f"message_{getattr(msg, 'id', 'media')}"
+        size_hint = getattr(doc, "size", None) if doc else None
+        _emit_media("start", kind=kind_guess, name=name_hint, size=size_hint)
+
         real_path = await msg.download_media(file=media_dir_abs)
         if not real_path:
+            _emit_media("error", kind=kind_guess, name=name_hint)
             return items
 
         rel_main = _to_web_path(os.path.relpath(real_path, start=export_dir_abs))
         name = filename_hint or os.path.basename(real_path)
         ext = os.path.splitext(real_path)[1].lower()
 
-        kind = "file"
+        kind = kind_guess
         if is_document and doc:
             mime = (doc.mime_type or "").lower()
             if mime.startswith("video/"):
                 kind = "video"
+            elif mime.startswith("image/"):
+                kind = "image"
             for attr in doc.attributes or []:
                 if isinstance(attr, DocumentAttributeVideo):
                     kind = "video"
@@ -112,7 +147,6 @@ async def _download_one_message_media(
 
         entry = {"kind": kind, "path": rel_main, "name": name}
 
-        # превью для видео
         if kind == "video" and is_document and doc:
             try:
                 stem = os.path.splitext(os.path.basename(real_path))[0]
@@ -122,11 +156,11 @@ async def _download_one_message_media(
                     rel_thumb = _to_web_path(os.path.relpath(thumb_real, start=export_dir_abs))
                     entry["thumb"] = rel_thumb
             except Exception as e:
-                log.debug("Не удалось скачать превью видео %s: %s", msg.id, e)
+                log.debug("Failed to download video preview %s: %s", msg.id, e)
 
         items.append(entry)
     except Exception as e:
-        log.warning("Не удалось скачать медиа из сообщения %s: %s", getattr(msg, "id", "?"), e)
+        log.warning("Failed to download media for message %s: %s", getattr(msg, "id", "?"), e)
 
     return items
 
@@ -162,39 +196,77 @@ async def dump_dialog_to_json_and_media(
     progress_every: int = 50,
     on_progress: Optional[Callable[[str, str, int], None]] = None,
     on_message: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_media: Optional[Callable[[Dict[str, Any]], None]] = None,
     skip_dangerous: bool = True,   # <<<
 ) -> Tuple[str, str]:
     """
-    Универсальный экспорт любого диалога (личный, группа, канал).
-    В JSON: 'from': {id, username, name, display}, media: список объектов (image/video/file/blocked).
+    Export a dialog (users/groups/channels) into structured JSON plus media files.
+    Each JSON entry contains sender info and an array of media descriptors (image/video/file/blocked).
     """
     entity = dialog.entity
-    title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or getattr(entity, "last_name", None) or "Без названия"
+    title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or getattr(entity, "last_name", None) or "Untitled dialog"
     safe_title = _safe_name(title, "dialog")
 
     export_dir_abs = _ensure_dir(os.path.join(out_root, safe_title))
     media_dir_abs = _ensure_dir(os.path.join(export_dir_abs, "media"))
     json_path = os.path.join(export_dir_abs, "channel_messages.json")
 
-    log.info("Начинаем выгрузку: %s", title)
+    log.info("Processing dialog: %s", title)
 
-    count = 0
-    result_messages = []
-
+    existing_messages: list[Dict[str, Any]] = []
+    processed_ids: set[int] = set()
     alias_map: Dict[int, str] = {}
     alias_counter: Dict[str, int] = {}
 
-    # пустой JSON + первый HTML (если задан on_progress)
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(result_messages, f, ensure_ascii=False, indent=2)
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                existing_messages = [m for m in data if isinstance(m, dict)]
+            else:
+                log.warning("Existing JSON %s has unexpected structure, ignoring", json_path)
+        except Exception as e:
+            log.warning("Failed to load existing JSON %s: %s", json_path, e)
+
+    for m in existing_messages:
+        mid = m.get("id")
+        if isinstance(mid, int):
+            processed_ids.add(mid)
+        sender = m.get("from") or {}
+        uid = sender.get("id")
+        display = sender.get("display")
+        if isinstance(uid, int) and isinstance(display, str) and display.startswith("User"):
+            alias_map[uid] = display
+            try:
+                num = int(display[4:])
+                alias_counter["uid"] = max(alias_counter.get("uid", 0), num)
+            except Exception:
+                pass
+        elif uid is None and isinstance(display, str) and display.startswith("User"):
+            try:
+                num = int(display[4:])
+                alias_counter["noid"] = max(alias_counter.get("noid", 0), num)
+            except Exception:
+                pass
+
+    result_messages = list(existing_messages)
+    count = len(result_messages)
+
+    if not os.path.exists(json_path):
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(result_messages, f, ensure_ascii=False, indent=2)
+
     if on_progress:
         try:
             on_progress(json_path, media_dir_abs, count)
         except Exception as e:
-            log.warning("on_progress (initial) исключение: %s", e)
+            log.warning("on_progress (initial) callback failed: %s", e)
 
     async for msg in client.iter_messages(entity, reverse=True):
         if not isinstance(msg, Message):
+            continue
+        if getattr(msg, "id", None) in processed_ids:
             continue
 
         sender = await msg.get_sender()
@@ -209,12 +281,19 @@ async def dump_dialog_to_json_and_media(
         }
 
         media_items = await _download_one_message_media(
-            client, msg, media_dir_abs=media_dir_abs, export_dir_abs=export_dir_abs,
-            skip_dangerous=skip_dangerous
+            client,
+            msg,
+            media_dir_abs=media_dir_abs,
+            export_dir_abs=export_dir_abs,
+            skip_dangerous=skip_dangerous,
+            media_event_cb=on_media,
         )
         item["media"] = media_items
 
         result_messages.append(item)
+        msg_id = item.get("id")
+        if isinstance(msg_id, int):
+            processed_ids.add(msg_id)
         count += 1
 
         if on_message:
@@ -232,12 +311,12 @@ async def dump_dialog_to_json_and_media(
         if progress_every and count % progress_every == 0:
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(result_messages, f, ensure_ascii=False, indent=2)
-            log.info("Промежуточное сохранение: %s сообщений...", count)
+            log.info("Saved messages so far: %s", count)
             if on_progress:
                 try:
                     on_progress(json_path, media_dir_abs, count)
                 except Exception as e:
-                    log.warning("on_progress исключение: %s", e)
+                    log.warning("on_progress callback failed: %s", e)
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result_messages, f, ensure_ascii=False, indent=2)
@@ -245,7 +324,7 @@ async def dump_dialog_to_json_and_media(
         try:
             on_progress(json_path, media_dir_abs, count)
         except Exception as e:
-            log.warning("on_progress (финал) исключение: %s", e)
+            log.warning("on_progress (final) callback failed: %s", e)
 
-    log.info("Готово. Сообщений: %s. JSON: %s. Медиа: %s", count, json_path, media_dir_abs)
+    log.info("Done. Total messages: %s. JSON: %s. Media: %s", count, json_path, media_dir_abs)
     return json_path, media_dir_abs

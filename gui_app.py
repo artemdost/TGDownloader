@@ -145,7 +145,6 @@ class Worker:
                 media_dir=media_dir,
                 count=count,
             )
-            self._emit("log", message=f"Saved {count} messages...")
 
         def on_message(info: dict[str, Any]) -> None:
             msg_id = info.get("id")
@@ -173,6 +172,23 @@ class Worker:
                     path_hint = media.get("path") or media.get("name") or "unknown"
                     self._emit("log", message=f"  saved {kind}: {path_hint}")
 
+        def on_media_event(info: dict[str, Any]) -> None:
+            stage = info.get("stage")
+            kind = (info.get("kind") or "file").strip()
+            name = (info.get("name") or info.get("path") or "media").strip()
+            message_id = info.get("message_id")
+            if stage == "start":
+                label = f"Downloading {kind}: {name}"
+                if message_id is not None:
+                    label = f"{label} (msg {message_id})"
+                self._emit("log", message=label)
+                self._emit("status", message=label)
+            elif stage == "blocked":
+                reason = info.get("reason") or "blocked"
+                self._emit("log", message=f"Blocked {kind}: {name} ({reason})")
+            elif stage == "error":
+                self._emit("log", message=f"Failed {kind}: {name}")
+
         try:
             json_path, media_dir = await dump_dialog_to_json_and_media(
                 self.client,
@@ -181,6 +197,7 @@ class Worker:
                 progress_every=progress_every,
                 on_progress=on_progress,
                 on_message=on_message,
+                on_media=on_media_event,
                 skip_dangerous=block_dangerous,
             )
             html_path = generate_html(
