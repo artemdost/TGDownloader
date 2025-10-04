@@ -4,7 +4,7 @@ import re
 import json
 import logging
 from datetime import datetime
-from typing import Tuple, Callable, Optional, Dict, Iterable
+from typing import Tuple, Callable, Optional, Dict, Iterable, Any
 
 from telethon.tl.types import (
     Message,
@@ -161,6 +161,7 @@ async def dump_dialog_to_json_and_media(
     out_root: str = "export",
     progress_every: int = 50,
     on_progress: Optional[Callable[[str, str, int], None]] = None,
+    on_message: Optional[Callable[[Dict[str, Any]], None]] = None,
     skip_dangerous: bool = True,   # <<<
 ) -> Tuple[str, str]:
     """
@@ -215,6 +216,18 @@ async def dump_dialog_to_json_and_media(
 
         result_messages.append(item)
         count += 1
+
+        if on_message:
+            try:
+                on_message({
+                    "id": item.get("id"),
+                    "count": count,
+                    "text": item.get("text", "") or "",
+                    "date": item.get("date"),
+                    "media": media_items,
+                })
+            except Exception as e:
+                log.warning("on_message callback failed: %s", e)
 
         if progress_every and count % progress_every == 0:
             with open(json_path, "w", encoding="utf-8") as f:

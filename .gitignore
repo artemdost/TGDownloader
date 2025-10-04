@@ -3,3 +3,4 @@ dist/
 venv/
 export/
 __pycache__/
+*.session*

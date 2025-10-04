@@ -145,6 +145,33 @@ class Worker:
                 media_dir=media_dir,
                 count=count,
             )
+            self._emit("log", message=f"Saved {count} messages...")
+
+        def on_message(info: dict[str, Any]) -> None:
+            msg_id = info.get("id")
+            count = info.get("count")
+            text_raw = info.get("text") or ""
+            text_snippet = text_raw.replace("\r", " ").replace("\n", " ").strip()
+            if len(text_snippet) > 120:
+                text_snippet = text_snippet[:117] + "..."
+            media_items = info.get("media") or []
+            summary_parts = []
+            if count is not None:
+                summary_parts.append(f"#{count}")
+            if msg_id is not None:
+                summary_parts.append(f"id {msg_id}")
+            header = "Message " + " ".join(summary_parts) if summary_parts else "Message"
+            body = text_snippet or "(no text)"
+            self._emit("log", message=f"{header}: {body}")
+            for media in media_items:
+                kind = media.get("kind") or "file"
+                if kind == "blocked":
+                    name = media.get("name") or "file"
+                    reason = media.get("reason") or "blocked"
+                    self._emit("log", message=f"  blocked {name} ({reason})")
+                else:
+                    path_hint = media.get("path") or media.get("name") or "unknown"
+                    self._emit("log", message=f"  saved {kind}: {path_hint}")
 
         try:
             json_path, media_dir = await dump_dialog_to_json_and_media(
@@ -153,6 +180,7 @@ class Worker:
                 out_root="export",
                 progress_every=progress_every,
                 on_progress=on_progress,
+                on_message=on_message,
                 skip_dangerous=block_dangerous,
             )
             html_path = generate_html(
