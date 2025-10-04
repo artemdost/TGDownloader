@@ -123,7 +123,29 @@ async def _download_one_message_media(
         size_hint = getattr(doc, "size", None) if doc else None
         _emit_media("start", kind=kind_guess, name=name_hint, size=size_hint)
 
-        real_path = await msg.download_media(file=media_dir_abs)
+        last_percent = -1
+
+        def _progress(current: int, total: int) -> None:
+            nonlocal last_percent
+            if total <= 0:
+                percent = None
+            else:
+                percent = int((current / total) * 100)
+            if percent is None:
+                _emit_media("progress", kind=kind_guess, name=name_hint, current=current, total=total)
+                return
+            if percent != last_percent and (percent - last_percent >= 10 or percent in {0, 100} or last_percent < 0):
+                last_percent = percent
+                _emit_media(
+                    "progress",
+                    kind=kind_guess,
+                    name=name_hint,
+                    current=current,
+                    total=total,
+                    percent=percent,
+                )
+
+        real_path = await msg.download_media(file=media_dir_abs, progress_callback=_progress)
         if not real_path:
             _emit_media("error", kind=kind_guess, name=name_hint)
             return items
@@ -159,6 +181,7 @@ async def _download_one_message_media(
             except Exception as e:
                 log.debug("Failed to download video preview %s: %s", msg.id, e)
 
+        _emit_media("complete", kind=kind, name=name_hint, path=rel_main)
         items.append(entry)
     except Exception as e:
         log.warning("Failed to download media for message %s: %s", getattr(msg, "id", "?"), e)

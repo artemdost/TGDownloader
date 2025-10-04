@@ -12,6 +12,15 @@ from typing import Any, Optional
 
 
 from channel_data import dump_dialog_to_json_and_media
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except Exception:
+    pystray = None
+    Image = None
+    ImageDraw = None
+
 from html_generator import generate_html
 from telegram_api import authorize, list_user_dialogs
 
@@ -34,6 +43,8 @@ class Worker:
         self._export_running = False
         self._export_finish_requested = False
         self._current_dialog_title: Optional[str] = None
+        self._media_progress: dict[tuple[str, str], int] = {}
+        self._media_labels: dict[tuple[str, str], str] = {}
 
     def start(self) -> None:
         self.thread.start()
@@ -246,16 +257,42 @@ class Worker:
             kind = (info.get("kind") or "file").strip()
             name = (info.get("name") or info.get("path") or "media").strip()
             message_id = info.get("message_id")
+            key = (title, name)
+            label = f"Downloading {kind}: {name}"
+            if message_id is not None:
+                label = f"{label} (msg {message_id})"
+
             if stage == "start":
-                label = f"Downloading {kind}: {name}"
-                if message_id is not None:
-                    label = f"{label} (msg {message_id})"
+                self._media_progress[key] = -1
+                self._media_labels[key] = label
                 self._emit("log", message=f"[{title}] {label}")
                 self._emit("status", message=label)
+            elif stage == "progress":
+                percent = info.get("percent")
+                current = info.get("current")
+                total = info.get("total")
+                prev = self._media_progress.get(key, -1)
+                if percent is not None:
+                    if percent != prev:
+                        self._media_progress[key] = percent
+                        status = f"{label} {percent}%"
+                        self._emit("status", message=status)
+                else:
+                    status = f"{label} {current or 0}/{total or '?'} bytes"
+                    self._emit("status", message=status)
+            elif stage == "complete":
+                self._media_progress.pop(key, None)
+                self._media_labels.pop(key, None)
+                self._emit("log", message=f"[{title}] Saved {kind}: {name}")
+                self._emit("status", message=f"Saved {kind}: {name}")
             elif stage == "blocked":
                 reason = info.get("reason") or "blocked"
+                self._media_progress.pop(key, None)
+                self._media_labels.pop(key, None)
                 self._emit("log", message=f"[{title}] Blocked {kind}: {name} ({reason})")
             elif stage == "error":
+                self._media_progress.pop(key, None)
+                self._media_labels.pop(key, None)
                 self._emit("log", message=f"[{title}] Failed {kind}: {name}")
 
         try:
@@ -381,11 +418,10 @@ class App(tk.Tk):
         self.api_id_var = tk.StringVar()
         self.api_hash_var = tk.StringVar()
         self.phone_var = tk.StringVar()
-        self.session_var = tk.StringVar(value="tg_gui")
-        self.no_session_var = tk.BooleanVar(value=False)
-        self.anonymize_var = tk.BooleanVar(value=True)
+        self.session_var = tk.StringVar(value="deleteIt")
+        self.no_session_var = tk.BooleanVar(value=True)
+        self.anonymize_var = tk.BooleanVar(value=False)
         self.block_dangerous_var = tk.BooleanVar(value=True)
-        self.refresh_var = tk.StringVar()
         self.batch_var = tk.StringVar(value=str(DEFAULT_PROGRESS_EVERY))
         self.search_var = tk.StringVar()
 
@@ -402,6 +438,9 @@ class App(tk.Tk):
         self._last_export_info: Optional[dict[str, Any]] = None
         self.last_export_html: Optional[str] = None
         self.last_export_dir: Optional[str] = None
+        self._tray_icon = None
+        self._tray_thread: Optional[threading.Thread] = None
+        self._tray_active = False
 
         self._build_layout()
 
@@ -499,6 +538,7 @@ class App(tk.Tk):
         header = ttk.Frame(self, style="Glass.TFrame", padding=(24, 20))
         header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 12))
         header.columnconfigure(1, weight=1)
+        header.columnconfigure(2, weight=0)
         self._build_header(header)
 
         cards_frame = ttk.Frame(self, style="CardInner.TFrame")
@@ -525,6 +565,11 @@ class App(tk.Tk):
         subtitle = ttk.Label(parent, text="Connect your private channels and archive everything with a single click.", style="Caption.TLabel")
         subtitle.grid(row=1, column=1, sticky="w", pady=(4, 0))
 
+        action_row = ttk.Frame(parent, style="Glass.TFrame")
+        action_row.grid(row=0, column=2, rowspan=2, sticky="e")
+        ttk.Button(action_row, text="Hide to tray", style="Secondary.TButton", command=self._minimize_to_tray).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(action_row, text="Exit", style="Accent.TButton", command=self._on_exit).grid(row=0, column=1)
+
     def _build_connect_card(self, parent: ttk.Frame) -> None:
         card = ttk.Frame(parent, style="Card.TFrame", padding=20)
         card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
@@ -534,11 +579,11 @@ class App(tk.Tk):
         ttk.Label(card, text="Use your Telegram API credentials to authorize.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 16))
 
         ttk.Label(card, text="API ID", style="Body.TLabel").grid(row=2, column=0, sticky="w")
-        self.api_id_entry = ttk.Entry(card, textvariable=self.api_id_var)
+        self.api_id_entry = ttk.Entry(card, textvariable=self.api_id_var, show='•')
         self.api_id_entry.grid(row=3, column=0, sticky="ew", pady=(4, 12))
 
         ttk.Label(card, text="API Hash", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        self.api_hash_entry = ttk.Entry(card, textvariable=self.api_hash_var)
+        self.api_hash_entry = ttk.Entry(card, textvariable=self.api_hash_var, show='•')
         self.api_hash_entry.grid(row=5, column=0, sticky="ew", pady=(4, 12))
 
         ttk.Label(card, text="Phone number", style="Body.TLabel").grid(row=6, column=0, sticky="w")
@@ -563,7 +608,7 @@ class App(tk.Tk):
         card.rowconfigure(3, weight=1)
 
         ttk.Label(card, text="Channels", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(card, text="Select one or more chats to archive.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 16))
+        ttk.Label(card, text="Select a chat to archive.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 16))
 
         search_row = ttk.Frame(card, style="CardInner.TFrame")
         search_row.grid(row=2, column=0, sticky="ew")
@@ -580,7 +625,7 @@ class App(tk.Tk):
 
         self.dialog_list = tk.Listbox(
             list_container,
-            selectmode=tk.MULTIPLE,
+            selectmode=tk.BROWSE,
             activestyle="none",
             exportselection=False,
             borderwidth=0,
@@ -615,21 +660,16 @@ class App(tk.Tk):
         ttk.Checkbutton(card, text="Anonymize sender names", variable=self.anonymize_var).grid(row=3, column=0, sticky="w", pady=(8, 0))
         ttk.Checkbutton(card, text="Block risky attachments", variable=self.block_dangerous_var).grid(row=4, column=0, sticky="w", pady=(4, 16))
 
-        entry_row = ttk.Frame(card, style="CardInner.TFrame")
-        entry_row.grid(row=5, column=0, sticky="ew")
-        ttk.Label(entry_row, text="Auto-refresh (sec)", style="Body.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(entry_row, text="Batch size", style="Body.TLabel").grid(row=0, column=1, sticky="w", padx=(16, 0))
-        self.refresh_entry = ttk.Entry(entry_row, textvariable=self.refresh_var, width=6)
-        self.refresh_entry.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        self.batch_entry = ttk.Entry(entry_row, textvariable=self.batch_var, width=6)
-        self.batch_entry.grid(row=1, column=1, sticky="ew", padx=(16, 0), pady=(4, 0))
+        ttk.Label(card, text="Batch size", style="Body.TLabel").grid(row=5, column=0, sticky="w")
+        self.batch_entry = ttk.Entry(card, textvariable=self.batch_var, width=8)
+        self.batch_entry.grid(row=6, column=0, sticky="w", pady=(4, 0))
 
         self.progress_bar = ttk.Progressbar(card, style="Accent.Horizontal.TProgressbar", mode="determinate")
-        self.progress_bar.grid(row=6, column=0, sticky="ew", pady=(24, 8))
-        ttk.Label(card, textvariable=self.stats_var, style="Info.TLabel").grid(row=7, column=0, sticky="w")
+        self.progress_bar.grid(row=7, column=0, sticky="ew", pady=(24, 8))
+        ttk.Label(card, textvariable=self.stats_var, style="Info.TLabel").grid(row=8, column=0, sticky="w")
 
         self.export_controls_frame = ttk.Frame(card, style="CardInner.TFrame")
-        self.export_controls_frame.grid(row=8, column=0, sticky="ew", pady=(24, 0))
+        self.export_controls_frame.grid(row=9, column=0, sticky="ew", pady=(24, 0))
         self.export_controls_frame.columnconfigure(0, weight=1)
         self.export_controls_frame.columnconfigure(1, weight=1)
         self.export_controls_frame.columnconfigure(2, weight=1)
@@ -646,9 +686,9 @@ class App(tk.Tk):
 
         self.completion_frame = ttk.Frame(card, style="CardInner.TFrame")
         self.completion_frame.columnconfigure(0, weight=1)
-        self.completion_frame.grid(row=8, column=0, sticky="ew", pady=(24, 0))
+        self.completion_frame.grid(row=9, column=0, sticky="ew", pady=(24, 0))
         self.completion_title_var = tk.StringVar(value="Export complete")
-        ttk.Label(self.completion_frame, text="?", font=("Inter", 26), background=self.colors["card"], foreground=self.colors["accent"]).grid(row=0, column=0, pady=(0, 4))
+        ttk.Label(self.completion_frame, text="✓", font=("Inter", 26), background=self.colors["card"], foreground=self.colors["accent"]).grid(row=0, column=0, pady=(0, 4))
         ttk.Label(self.completion_frame, textvariable=self.completion_title_var, style="Title.TLabel").grid(row=1, column=0, pady=(0, 4))
         ttk.Label(self.completion_frame, text="Your archive is ready.", style="Info.TLabel").grid(row=2, column=0)
         completion_buttons = ttk.Frame(self.completion_frame, style="CardInner.TFrame")
@@ -705,7 +745,7 @@ class App(tk.Tk):
             title = item.get("title", "")
             if query and query not in title.lower():
                 continue
-            icon = icon_map.get(item.get("kind"), "[--]")
+            icon = icon_map.get(item.get('kind'), '•')
             entry = f"{icon}  {title}"
             self.dialog_list.insert(tk.END, entry)
             self.filtered_indices.append(item["index"])
@@ -810,10 +850,137 @@ class App(tk.Tk):
         title = event.get("title") or "Input"
         secret = bool(event.get("secret"))
         fut = event.get("future")
-        show = "*" if secret else None
-        value = simpledialog.askstring(title, prompt, show=show, parent=self)
+        value = self._show_input_dialog(title=title, prompt=prompt, secret=secret)
         if fut is not None:
             self.worker.resolve_future(fut, value)
+
+    def _show_input_dialog(self, title: str, prompt: str, secret: bool = False) -> Optional[str]:
+        if Image is None or pystray is None:
+            return simpledialog.askstring(title, prompt, show='•' if secret else '', parent=self)
+        top = tk.Toplevel(self)
+        top.title(title)
+        top.configure(bg=self.colors['window'])
+        top.transient(self)
+        top.grab_set()
+        top.resizable(False, False)
+
+        frame = ttk.Frame(top, style='Card.TFrame', padding=20)
+        frame.grid(row=0, column=0, sticky='nsew')
+
+        ttk.Label(frame, text=prompt, style='Body.TLabel').grid(row=0, column=0, sticky='w')
+        value_var = tk.StringVar()
+        entry = ttk.Entry(frame, textvariable=value_var, show='•' if secret else '')
+        entry.grid(row=1, column=0, sticky='ew', pady=(8, 16))
+        entry.focus_set()
+
+        button_row = ttk.Frame(frame, style='CardInner.TFrame')
+        button_row.grid(row=2, column=0, sticky='ew')
+        button_row.columnconfigure(0, weight=1)
+        button_row.columnconfigure(1, weight=1)
+
+        result: dict[str, Optional[str]] = {'value': None}
+
+        def submit() -> None:
+            result['value'] = value_var.get().strip() or None
+            top.destroy()
+
+        def cancel() -> None:
+            result['value'] = None
+            top.destroy()
+
+        ttk.Button(button_row, text='Cancel', style='Secondary.TButton', command=cancel).grid(row=0, column=0, sticky='ew', padx=(0, 12))
+        ttk.Button(button_row, text='OK', style='Accent.TButton', command=submit).grid(row=0, column=1, sticky='ew')
+
+        top.bind('<Return>', lambda _: submit())
+        top.bind('<Escape>', lambda _: cancel())
+
+        self._center_modal(top)
+        top.wait_window()
+        return result.get('value')
+
+    def _center_modal(self, window: tk.Toplevel) -> None:
+        window.update_idletasks()
+        w = window.winfo_width()
+        h = window.winfo_height()
+        parent_w = self.winfo_width()
+        parent_h = self.winfo_height()
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        x = parent_x + max((parent_w - w) // 2, 0)
+        y = parent_y + max((parent_h - h) // 2, 0)
+        window.geometry('{}x{}+{}+{}'.format(w, h, x, y))
+
+    def _create_tray_image(self):
+        if Image is None or ImageDraw is None:
+            return None
+        size = 64
+        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((8, 8, 56, 56), fill=self.colors.get('accent', '#229ED9'))
+        draw.polygon((26, 22, 44, 30, 30, 34, 26, 50, 22, 36), fill=self.colors.get('accent_contrast', '#FFFFFF'))
+        return image
+
+    def _start_tray_icon(self) -> None:
+        if self._tray_active or pystray is None:
+            return
+        image = self._create_tray_image()
+        if image is None:
+            return
+
+        def on_show(icon, item):
+            self.after(0, self._restore_from_tray)
+
+        def on_exit(icon, item):
+            self.after(0, self._on_exit)
+
+        menu = pystray.Menu(
+            pystray.MenuItem('Show window', on_show),
+            pystray.MenuItem('Exit', on_exit),
+        )
+        self._tray_icon = pystray.Icon('tg-export', image, 'Telegram Export Studio', menu)
+
+        def run() -> None:
+            try:
+                self._tray_active = True
+                self._tray_icon.run()
+            finally:
+                self._tray_active = False
+
+        self._tray_thread = threading.Thread(target=run, daemon=True)
+        self._tray_thread.start()
+
+    def _stop_tray_icon(self) -> None:
+        if self._tray_icon:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+        self._tray_icon = None
+        self._tray_active = False
+        self._tray_thread = None
+
+    def _restore_from_tray(self) -> None:
+        self._stop_tray_icon()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _minimize_to_tray(self) -> None:
+        if pystray is None or Image is None or ImageDraw is None:
+            messagebox.showinfo('Tray unavailable', 'pystray and Pillow are required for tray mode. Exiting instead.', parent=self)
+            self._on_exit()
+            return
+        self.withdraw()
+        self._start_tray_icon()
+        self.status_var.set('Running in tray…')
+
+    def _on_exit(self) -> None:
+        self._stop_tray_icon()
+        try:
+            self.worker.send_command('stop')
+        except Exception:
+            pass
+        self.after(200, self.destroy)
 
     def _set_progress_running(self, running: bool) -> None:
         if running:
@@ -898,12 +1065,7 @@ class App(tk.Tk):
             messagebox.showwarning("Attention", "Select at least one channel", parent=self)
             return
         dialog_indices = [self.filtered_indices[i] for i in selection]
-        try:
-            refresh_value = self.refresh_var.get().strip()
-            refresh_seconds = int(refresh_value) if refresh_value else None
-        except ValueError:
-            messagebox.showerror("Error", "Auto-refresh must be numeric", parent=self)
-            return
+        refresh_seconds = None
         try:
             batch_value = int(self.batch_var.get().strip())
         except ValueError:
@@ -921,6 +1083,7 @@ class App(tk.Tk):
         )
         self.export_running = True
         self.export_paused = False
+        self.export_finishing = False
         self._set_progress_running(True)
         self._update_export_controls()
 
@@ -969,17 +1132,14 @@ class App(tk.Tk):
                 self.channel_title_var.set("Select a channel to export")
             else:
                 self.channel_title_var.set("No channels available")
-        elif len(selection) == 1:
+        else:
             idx = self.filtered_indices[selection[0]]
             match = next((d for d in self.all_dialogs if d.get("index") == idx), None)
             self.channel_title_var.set(match.get("title") if match else "Channel")
-        else:
-            self.channel_title_var.set(f"{len(selection)} channels selected")
         self._update_export_controls()
 
     def _on_close(self) -> None:
-        self.worker.send_command("stop")
-        self.after(200, self.destroy)
+        self._minimize_to_tray()
 def main() -> None:
     app = App()
     app.mainloop()
