@@ -4,8 +4,10 @@ import os
 import re
 import json
 import logging
+import time  # ← ДОБАВИТЬ
 from datetime import datetime
 from typing import Tuple, Callable, Optional, Dict, Iterable, Any
+from collections import deque  # ← ДОБАВИТЬ
 
 from telethon.tl.types import (
     Message,
@@ -16,7 +18,46 @@ from telethon.tl.types import (
 
 log = logging.getLogger("channel_data")
 
-# Расширения/мимы, которые считаем потенциально опасными для скачивания
+# ═══════════════════════════════════════════════════
+# RATE LIMITER CLASS (ДОБАВИТЬ В НАЧАЛО ФАЙЛА)
+# ═══════════════════════════════════════════════════
+class RateLimiter:
+    """Ограничение скорости скачивания"""
+    
+    def __init__(self, max_requests: int = 10, time_window: int = 60):
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = deque()
+    
+    async def acquire(self):
+        """Ждёт, пока не освободится слот"""
+        now = time.time()
+        
+        # Удаляем старые запросы
+        while self.requests and self.requests[0] < now - self.time_window:
+            self.requests.popleft()
+        
+        # Ждём, если лимит превышен
+        if len(self.requests) >= self.max_requests:
+            sleep_time = self.requests[0] + self.time_window - now
+            if sleep_time > 0:
+                log.debug(f"Rate limit reached, waiting {sleep_time:.1f}s")
+                await asyncio.sleep(sleep_time)
+                # После ожидания снова очищаем устаревшие
+                now = time.time()
+                while self.requests and self.requests[0] < now - self.time_window:
+                    self.requests.popleft()
+        
+        self.requests.append(now)
+
+# ═══════════════════════════════════════════════════
+# ГЛОБАЛЬНЫЙ ЛИМИТЕР (СОЗДАТЬ ПОСЛЕ КЛАССА)
+# ═══════════════════════════════════════════════════
+# Ограничение: максимум 5 скачиваний за 10 секунд
+_media_download_limiter = RateLimiter(max_requests=5, time_window=10)
+
+# ... (весь остальной код без изменений до функции _download_one_message_media)
+
 DANGEROUS_EXT: set[str] = {
     ".exe", ".scr", ".pif", ".com", ".cmd", ".bat", ".vbs", ".vbe", ".js", ".jse",
     ".wsf", ".wsh", ".ps1", ".psm1", ".psc1", ".msi", ".msp", ".mst", ".jar", ".lnk",
@@ -44,16 +85,12 @@ def _to_web_path(p: str) -> str:
     return p.replace("\\", "/")
 
 def _is_dangerous(doc, filename: str | None) -> bool:
-    """
-    Эвристика: не качаем, если расширение/миме подозрительны.
-    """
     fn_ext = (os.path.splitext(filename)[1].lower() if filename else "")
     if fn_ext in DANGEROUS_EXT:
         return True
     mime = (getattr(doc, "mime_type", None) or "").lower()
     if any(mime.startswith(pref) for pref in DANGEROUS_MIME_PREFIX):
         return True
-    # js/html как документы тоже не скачиваем (риски XSS/скриптов)
     if mime in {"text/javascript", "application/javascript", "text/html"}:
         return True
     return False
@@ -67,9 +104,7 @@ async def _download_one_message_media(
     media_event_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> list[dict]:
     """
-    Download media from a message and return descriptor dicts:
-      {"kind": "image"|"video"|"file"|"blocked", "path": "...", "thumb": "...", "name": "..."}.
-    If skip_dangerous=True and the payload looks risky, nothing is downloaded and a blocked placeholder is returned.
+    Download media from a message with rate limiting.
     """
     items: list[dict] = []
     if not msg or not msg.media:
@@ -82,7 +117,7 @@ async def _download_one_message_media(
         payload.update(details)
         try:
             media_event_cb(payload)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.debug("media_event callback failed: %s", exc)
 
     try:
@@ -145,6 +180,11 @@ async def _download_one_message_media(
                     percent=percent,
                 )
 
+        # ═══════════════════════════════════════════════════
+        # ПРИМЕНЕНИЕ RATE LIMITER ЗДЕСЬ! ← КЛЮЧЕВАЯ СТРОКА
+        # ═══════════════════════════════════════════════════
+        await _media_download_limiter.acquire()
+        
         real_path = await msg.download_media(file=media_dir_abs, progress_callback=_progress)
         if not real_path:
             _emit_media("error", kind=kind_guess, name=name_hint)
@@ -172,6 +212,11 @@ async def _download_one_message_media(
 
         if kind == "video" and is_document and doc:
             try:
+                # ═══════════════════════════════════════════════════
+                # RATE LIMITER ДЛЯ ПРЕВЬЮ ВИДЕО
+                # ═══════════════════════════════════════════════════
+                await _media_download_limiter.acquire()
+                
                 stem = os.path.splitext(os.path.basename(real_path))[0]
                 thumb_guess = os.path.join(media_dir_abs, f"{stem}.jpg")
                 thumb_real = await client.download_file(doc, file=thumb_guess, thumb=-1)
@@ -188,6 +233,7 @@ async def _download_one_message_media(
 
     return items
 
+# ... (весь остальной код без изменений)
 
 def _make_sender_display(sender, alias_map: Dict[int, str], alias_counter: Dict[str, int]) -> dict:
     if not sender:
@@ -225,11 +271,10 @@ async def dump_dialog_to_json_and_media(
     pause_event: Optional[asyncio.Event] = None,
     cancel_event: Optional[asyncio.Event] = None,
     is_finish_requested: Optional[Callable[[], bool]] = None,
-    skip_dangerous: bool = True,   # <<<
+    skip_dangerous: bool = True,
 ) -> Tuple[str, str]:
     """
-    Export a dialog (users/groups/channels) into structured JSON plus media files.
-    Each JSON entry contains sender info and an array of media descriptors (image/video/file/blocked).
+    Export a dialog with rate-limited media downloads.
     """
     entity = dialog.entity
     title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or getattr(entity, "last_name", None) or "Untitled dialog"
@@ -378,4 +423,3 @@ async def dump_dialog_to_json_and_media(
         raise asyncio.CancelledError()
 
     return json_path, media_dir_abs
-
