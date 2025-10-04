@@ -1,4 +1,4 @@
-# gui_app.py
+# gui_app.py - SECURED VERSION
 import asyncio
 import os
 import queue
@@ -9,7 +9,8 @@ import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Optional
-
+import ctypes
+import hashlib
 
 from channel_data import dump_dialog_to_json_and_media
 
@@ -25,6 +26,46 @@ from html_generator import generate_html
 from telegram_api import authorize, list_user_dialogs
 
 DEFAULT_PROGRESS_EVERY = 50
+
+# ═══════════════════════════════════════════════════
+# SECURITY: SECURE CREDENTIAL STORAGE
+# ═══════════════════════════════════════════════════
+class SecureVar:
+    """Secure variable that clears memory on deletion"""
+    
+    def __init__(self, value: str = ""):
+        self._value = value
+        self._cleared = False
+    
+    def set(self, value: str):
+        """Set value"""
+        self.clear()
+        self._value = str(value) if value else ""
+        self._cleared = False
+    
+    def get(self) -> str:
+        """Get value"""
+        if self._cleared:
+            return ""
+        return self._value
+    
+    def clear(self):
+        """Securely clear value from memory"""
+        if self._cleared:
+            return
+        try:
+            if self._value:
+                # Attempt to overwrite memory
+                buf = ctypes.create_string_buffer(len(self._value.encode('utf-8')))
+                ctypes.memset(ctypes.addressof(buf), 0, len(self._value.encode('utf-8')))
+        except Exception:
+            pass
+        finally:
+            self._value = ""
+            self._cleared = True
+    
+    def __del__(self):
+        self.clear()
 
 
 class Worker:
@@ -48,10 +89,9 @@ class Worker:
         self._cleanup_old_sessions()
     
     def _cleanup_old_sessions(self) -> None:
-        """Удаляет .DELETE_ME файлы и orphaned sessions при старте."""
+        """Remove .DELETE_ME files and orphaned sessions on startup"""
         import glob
         
-        # Удаляем файлы, помеченные для удаления
         for trash_file in glob.glob("*.DELETE_ME_*"):
             try:
                 os.remove(trash_file)
@@ -92,7 +132,7 @@ class Worker:
                 continue
             try:
                 self.loop.run_until_complete(handler(**payload))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self._emit("error", message=str(exc))
 
     async def _handle_stop(self) -> None:
@@ -106,24 +146,22 @@ class Worker:
                     fut.set_result(None)
             self._pending_inputs.clear()
         
-        # === ОТКЛЮЧЕНИЕ КЛИЕНТА ПЕРВЫМ (освобождает файлы) ===
+        # Disconnect client first (releases file handles)
         if self.client:
             try:
                 await self.client.disconnect()
-                # Даём время на освобождение файлов
                 await asyncio.sleep(0.5)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         
-        # === АВТОУДАЛЕНИЕ SESSION-ФАЙЛОВ ===
+        # Auto-delete session files
         import glob
-        import time
         
         session_files_deleted = []
         session_files_failed = []
         
         for session_file in glob.glob("*.session*"):
-            # Попытка 1: Обычное удаление
+            # Attempt 1: Direct deletion
             try:
                 os.remove(session_file)
                 session_files_deleted.append(session_file)
@@ -136,7 +174,7 @@ class Worker:
                 session_files_failed.append(session_file)
                 continue
             
-            # Попытка 2: Подождать и попробовать снова
+            # Attempt 2: Wait and retry
             try:
                 time.sleep(0.3)
                 os.remove(session_file)
@@ -146,12 +184,11 @@ class Worker:
             except Exception:
                 pass
             
-            # Попытка 3: Переименовать для удаления при следующем запуске
+            # Attempt 3: Rename for deletion on next start
             try:
                 trash_name = f"{session_file}.DELETE_ME_{int(time.time())}"
                 os.rename(session_file, trash_name)
                 self._emit("log", message=f"🔄 Marked for deletion: {session_file}")
-                # Попытаемся удалить переименованный файл
                 try:
                     os.remove(trash_name)
                     session_files_deleted.append(session_file)
@@ -163,7 +200,7 @@ class Worker:
                 session_files_failed.append(session_file)
                 self._emit("log", message=f"❌ Cannot process {session_file}: {e}")
         
-        # Удаляем старые .DELETE_ME файлы из предыдущих запусков
+        # Clean up old .DELETE_ME files
         for old_trash in glob.glob("*.DELETE_ME_*"):
             try:
                 os.remove(old_trash)
@@ -171,7 +208,6 @@ class Worker:
             except Exception:
                 pass
         
-        # Итоговое сообщение
         if session_files_deleted:
             self._emit("log", message=f"✅ Cleaned up {len(session_files_deleted)} session file(s)")
         if session_files_failed:
@@ -190,9 +226,10 @@ class Worker:
         if self.client:
             try:
                 await self.client.disconnect()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self.client = None
+        
         try:
             client = await authorize(
                 api_id=api_id,
@@ -202,8 +239,9 @@ class Worker:
                 code_callback=self._request_code,
                 password_callback=self._request_password,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(f"Authorization failed: {exc}") from exc
+        
         self.client = client
         me = await client.get_me()
         identity = (
@@ -212,7 +250,7 @@ class Worker:
             or getattr(me, "last_name", None)
             or "account"
         )
-        self._emit("status", message=f"Connected: {identity}")
+        self._emit("status", message=f"Connected: {identity[:20]}")  # Limit length
         self._emit("log", message="Authorization successful")
         await self._send_dialogs()
 
@@ -233,6 +271,7 @@ class Worker:
             raise RuntimeError("Connect your account first")
         if self._export_running:
             raise RuntimeError("Export already in progress")
+        
         indices = list(dict.fromkeys(dialog_indices))
         if not indices:
             raise RuntimeError("Select a channel to export")
@@ -249,6 +288,7 @@ class Worker:
             for idx in indices:
                 if idx < 0 or idx >= len(self.dialogs):
                     raise RuntimeError("Selected dialog is out of range")
+                
                 dialog = self.dialogs[idx]
                 title = (
                     getattr(dialog.entity, "title", None)
@@ -256,9 +296,14 @@ class Worker:
                     or getattr(dialog.entity, "last_name", None)
                     or "Channel"
                 )
-                self._current_dialog_title = title
-                self._emit("status", message=f"Preparing export: {title}")
-                self._emit("log", message=f"Starting export: {title}")
+                
+                # Sanitize title for logging
+                safe_title = title[:50] if title else "Channel"
+                
+                self._current_dialog_title = safe_title
+                self._emit("status", message=f"Preparing export: {safe_title}")
+                self._emit("log", message=f"Starting export: {safe_title}")
+                
                 await self._run_single_export(
                     dialog=dialog,
                     title=title,
@@ -267,19 +312,23 @@ class Worker:
                     refresh_seconds=refresh_seconds,
                     progress_every=progress_every,
                 )
+                
                 if self._export_finish_requested:
                     completed_successfully = True
                     self._emit("status", message="Export finalized")
                     break
+                
                 if self._export_cancel_event.is_set():
                     raise asyncio.CancelledError()
             else:
                 completed_successfully = True
                 self._emit("status", message="Export completed")
+        
         except asyncio.CancelledError:
             self._emit("log", message="Export cancelled")
             self._emit("status", message="Export cancelled")
             self._emit("export_state", state="cancelled")
+        
         finally:
             self._export_running = False
             self._current_dialog_title = None
@@ -289,6 +338,7 @@ class Worker:
             self._export_finish_requested = False
             if completed_successfully or finish_requested:
                 self._emit("export_state", state="completed")
+
     async def _run_single_export(
         self,
         dialog,
@@ -298,30 +348,39 @@ class Worker:
         refresh_seconds: Optional[int],
         progress_every: int,
     ) -> None:
+        safe_title = title[:50] if title else "Channel"
+        
         def on_progress(json_path: str, media_dir: str, count: int) -> None:
             self._emit(
                 "progress",
                 json_path=json_path,
                 media_dir=media_dir,
                 count=count,
-                channel=title,
+                channel=safe_title,
             )
 
         def on_message(info: dict[str, Any]) -> None:
             msg_id = info.get("id")
             count = info.get("count")
+            
             summary_parts = []
             if count is not None:
                 summary_parts.append(f"#{count}")
             if msg_id is not None:
                 summary_parts.append(f"id {msg_id}")
+            
             header = "Message " + " ".join(summary_parts) if summary_parts else "Message"
+            
             text_raw = info.get("text") or ""
             text_snippet = " ".join(text_raw.splitlines()).strip()
-            if len(text_snippet) > 120:
-                text_snippet = f"{text_snippet[:117]}..."
+            
+            # Limit text length in logs
+            if len(text_snippet) > 100:
+                text_snippet = f"{text_snippet[:97]}..."
+            
             body = text_snippet or "(no text)"
-            self._emit("log", message=f"[{title}] {header}: {body}")
+            self._emit("log", message=f"[{safe_title}] {header}: {body}")
+            
             for media in info.get("media") or []:
                 kind = media.get("kind") or "file"
                 if kind == "blocked":
@@ -337,7 +396,12 @@ class Worker:
             kind = (info.get("kind") or "file").strip()
             name = (info.get("name") or info.get("path") or "media").strip()
             message_id = info.get("message_id")
-            key = (title, name)
+            
+            # Limit name length
+            if len(name) > 50:
+                name = name[:47] + "..."
+            
+            key = (safe_title, name)
             label = f"Downloading {kind}: {name}"
             if message_id is not None:
                 label = f"{label} (msg {message_id})"
@@ -345,13 +409,15 @@ class Worker:
             if stage == "start":
                 self._media_progress[key] = -1
                 self._media_labels[key] = label
-                self._emit("log", message=f"[{title}] {label}")
+                self._emit("log", message=f"[{safe_title}] {label}")
                 self._emit("status", message=label)
+            
             elif stage == "progress":
                 percent = info.get("percent")
                 current = info.get("current")
                 total = info.get("total")
                 prev = self._media_progress.get(key, -1)
+                
                 if percent is not None:
                     if percent != prev:
                         self._media_progress[key] = percent
@@ -360,20 +426,23 @@ class Worker:
                 else:
                     status = f"{label} {current or 0}/{total or '?'} bytes"
                     self._emit("status", message=status)
+            
             elif stage == "complete":
                 self._media_progress.pop(key, None)
                 self._media_labels.pop(key, None)
-                self._emit("log", message=f"[{title}] Saved {kind}: {name}")
+                self._emit("log", message=f"[{safe_title}] Saved {kind}: {name}")
                 self._emit("status", message=f"Saved {kind}: {name}")
+            
             elif stage == "blocked":
                 reason = info.get("reason") or "blocked"
                 self._media_progress.pop(key, None)
                 self._media_labels.pop(key, None)
-                self._emit("log", message=f"[{title}] Blocked {kind}: {name} ({reason})")
+                self._emit("log", message=f"[{safe_title}] Blocked {kind}: {name} ({reason})")
+            
             elif stage == "error":
                 self._media_progress.pop(key, None)
                 self._media_labels.pop(key, None)
-                self._emit("log", message=f"[{title}] Failed {kind}: {name}")
+                self._emit("log", message=f"[{safe_title}] Failed {kind}: {name}")
 
         try:
             json_path, media_dir = await dump_dialog_to_json_and_media(
@@ -391,6 +460,7 @@ class Worker:
             )
         except asyncio.CancelledError:
             raise
+        
         html_path = generate_html(
             json_path=json_path,
             media_root=media_dir,
@@ -399,20 +469,22 @@ class Worker:
             anonymize=anonymize,
             csp=True,
         )
+        
         self._emit(
             "export_done",
             json_path=json_path,
             media_dir=media_dir,
             html_path=html_path,
-            channel=title,
+            channel=safe_title,
         )
-        self._emit("status", message=f"Export finished: {title}")
+        self._emit("status", message=f"Export finished: {safe_title}")
 
     def request_pause(self) -> bool:
         if not self._export_running or not self._export_pause_event or not self.loop:
             return False
         if not self._export_pause_event.is_set():
             return False
+        
         self.loop.call_soon_threadsafe(self._export_pause_event.clear)
         self._emit("status", message="Export paused")
         self._emit("log", message="Export paused")
@@ -424,6 +496,7 @@ class Worker:
             return False
         if self._export_pause_event.is_set():
             return False
+        
         self.loop.call_soon_threadsafe(self._export_pause_event.set)
         self._emit("status", message="Resuming export")
         self._emit("log", message="Resuming export")
@@ -435,15 +508,16 @@ class Worker:
             return False
         if self._export_finish_requested:
             return False
+        
         self._export_finish_requested = True
         self.loop.call_soon_threadsafe(self._export_cancel_event.set)
         if self._export_pause_event:
             self.loop.call_soon_threadsafe(self._export_pause_event.set)
+        
         self._emit("log", message="Finishing export with current data...")
         self._emit("status", message="Finalizing export")
         self._emit("export_state", state="finish_requested")
         return True
-
 
     async def _run_input_dialog(self, prompt: str, title: str, secret: bool = False) -> str:
         fut: asyncio.Future = self.loop.create_future()
@@ -471,6 +545,7 @@ class Worker:
         dialogs = await list_user_dialogs(self.client)
         self.dialogs = dialogs
         items = []
+        
         for idx, dlg in enumerate(dialogs):
             title = (
                 getattr(dlg.entity, "title", None)
@@ -478,9 +553,17 @@ class Worker:
                 or getattr(dlg.entity, "last_name", None)
                 or "No title"
             )
-            items.append({"index": idx, "title": title, "kind": getattr(dlg, "_tgdl_kind", "?")})
+            items.append({
+                "index": idx,
+                "title": title,
+                "kind": getattr(dlg, "_tgdl_kind", "?")
+            })
+        
         self._emit("dialogs", items=items)
         self._emit("log", message=f"Dialogs updated: {len(items)}")
+# gui_app.py - PART 2 (App class)
+# Add this after the Worker class from Part 1
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -495,12 +578,12 @@ class App(tk.Tk):
         self.worker = Worker(self.ui_queue)
         self.worker.start()
 
-        self.api_id_var = tk.StringVar()
-        self.api_hash_var = tk.StringVar()
-        self.phone_var = tk.StringVar()
-        # ═══════════════════════════════════════════════════
-        # УДАЛЕНО: session_var, no_session_var
-        # ═══════════════════════════════════════════════════
+        # SECURITY: Use SecureVar for sensitive data
+        self.api_id_var = SecureVar()
+        self.api_hash_var = SecureVar()
+        self.phone_var = SecureVar()
+        
+        # Non-sensitive vars
         self.anonymize_var = tk.BooleanVar(value=False)
         self.block_dangerous_var = tk.BooleanVar(value=True)
         self.batch_var = tk.StringVar(value=str(DEFAULT_PROGRESS_EVERY))
@@ -530,9 +613,18 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(120, self._process_events)
 
+    def __del__(self):
+        """Secure cleanup on destruction"""
+        try:
+            self.api_id_var.clear()
+            self.api_hash_var.clear()
+            self.phone_var.clear()
+        except Exception:
+            pass
+
     def _setup_theme(self) -> dict[str, str]:
         try:
-            import darkdetect  # type: ignore
+            import darkdetect
             is_dark = bool(darkdetect.isDark())
         except Exception:
             is_dark = False
@@ -598,7 +690,7 @@ class App(tk.Tk):
         style.configure("Ghost.TButton", background=colors["card"], foreground=colors["accent"], padding=(12, 8), borderwidth=0)
         style.map("Ghost.TButton", foreground=[("active", colors["accent_hover"]), ("pressed", colors["accent_active"]), ("disabled", colors["muted"])])
         style.configure("TCheckbutton", background=colors["card"], foreground=colors["text"], focuscolor=colors["accent"])
-        style.map("TCheckbutton", foreground=[("disabled", colors["muted"])] )
+        style.map("TCheckbutton", foreground=[("disabled", colors["muted"])])
         style.configure("TEntry", fieldbackground=colors["entry_bg"], bordercolor=colors["border"], lightcolor=colors["accent"], darkcolor=colors["border"], insertcolor=colors["accent"], padding=6)
         style.map("TEntry", fieldbackground=[("focus", colors["entry_focus"])], bordercolor=[("focus", colors["accent"])])
         style.configure("Accent.Horizontal.TProgressbar", troughcolor=colors["card"], background=colors["accent"], bordercolor=colors["card"], lightcolor=colors["accent"], darkcolor=colors["accent"])
@@ -659,28 +751,40 @@ class App(tk.Tk):
         ttk.Label(card, text="Connect", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(card, text="Use your Telegram API credentials to authorize.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 16))
 
+        # API ID
         ttk.Label(card, text="API ID", style="Body.TLabel").grid(row=2, column=0, sticky="w")
-        self.api_id_entry = ttk.Entry(card, textvariable=self.api_id_var, show='•')
+        self.api_id_entry = ttk.Entry(card, show='•')
         self.api_id_entry.grid(row=3, column=0, sticky="ew", pady=(4, 12))
-
-        ttk.Label(card, text="API Hash", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        self.api_hash_entry = ttk.Entry(card, textvariable=self.api_hash_var, show='•')
-        self.api_hash_entry.grid(row=5, column=0, sticky="ew", pady=(4, 12))
-
-        ttk.Label(card, text="Phone number", style="Body.TLabel").grid(row=6, column=0, sticky="w")
-        self.phone_entry = ttk.Entry(card, textvariable=self.phone_var)
-        self.phone_entry.grid(row=7, column=0, sticky="ew", pady=(4, 12))
-
-        # ═══════════════════════════════════════════════════
-        # УДАЛЕНО: session_row, session_entry, no_session_var
-        # ═══════════════════════════════════════════════════
         
-        # Добавьте информационное сообщение
+        # Bind to SecureVar
+        def on_api_id_change(*args):
+            self.api_id_var.set(self.api_id_entry.get())
+        self.api_id_entry.bind('<KeyRelease>', on_api_id_change)
+
+        # API Hash
+        ttk.Label(card, text="API Hash", style="Body.TLabel").grid(row=4, column=0, sticky="w")
+        self.api_hash_entry = ttk.Entry(card, show='•')
+        self.api_hash_entry.grid(row=5, column=0, sticky="ew", pady=(4, 12))
+        
+        def on_api_hash_change(*args):
+            self.api_hash_var.set(self.api_hash_entry.get())
+        self.api_hash_entry.bind('<KeyRelease>', on_api_hash_change)
+
+        # Phone
+        ttk.Label(card, text="Phone number", style="Body.TLabel").grid(row=6, column=0, sticky="w")
+        self.phone_entry = ttk.Entry(card)
+        self.phone_entry.grid(row=7, column=0, sticky="ew", pady=(4, 12))
+        
+        def on_phone_change(*args):
+            self.phone_var.set(self.phone_entry.get())
+        self.phone_entry.bind('<KeyRelease>', on_phone_change)
+
+        # Info message
         info_frame = ttk.Frame(card, style="CardInner.TFrame")
         info_frame.grid(row=8, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(
-            info_frame, 
-            text="🔒 No session files will be saved\nYou'll need to enter code on each launch", 
+            info_frame,
+            text="🔒 No session files will be saved\nYou'll need to enter code on each launch",
             style="Info.TLabel",
             justify="left"
         ).grid(row=0, column=0, sticky="w")
@@ -823,24 +927,38 @@ class App(tk.Tk):
         status_row.grid(row=2, column=0, sticky="ew")
         ttk.Label(status_row, textvariable=self.status_var, style="Info.TLabel").grid(row=0, column=0, sticky="w")
 
+# gui_app.py - PART 3 (App class methods continuation)
+# Add these methods to the App class from Part 2
+
     def _apply_filter(self) -> None:
         query = self.search_var.get().strip().lower()
         self.dialog_list.delete(0, tk.END)
         self.filtered_indices.clear()
         icon_map = {"channel": "[CH]", "group": "[GR]", "user": "[DM]"}
+        
         for item in self.all_dialogs:
             title = item.get("title", "")
             if query and query not in title.lower():
                 continue
             icon = icon_map.get(item.get('kind'), '•')
-            entry = f"{icon}  {title}"
+            
+            # Sanitize title for display
+            display_title = title[:100] if len(title) > 100 else title
+            entry = f"{icon}  {display_title}"
+            
             self.dialog_list.insert(tk.END, entry)
             self.filtered_indices.append(item["index"])
+        
         self._on_channel_select()
         self._update_export_controls()
 
     def _append_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
+        
+        # Sanitize log message (limit length)
+        if len(message) > 500:
+            message = message[:497] + "..."
+        
         self.log_text.configure(state="normal")
         self.log_text.insert("end", f"[{timestamp}] ", ("timestamp",))
         self.log_text.insert("end", f"{message}\n", ("message",))
@@ -858,27 +976,34 @@ class App(tk.Tk):
 
     def _handle_event(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
+        
         if etype == "log":
             msg = event.get("message")
             if msg:
                 self._append_log(msg)
+        
         elif etype == "error":
             msg = event.get("message", "Unexpected error")
             self._append_log(f"[Error] {msg}")
-            messagebox.showerror("Error", msg, parent=self)
+            messagebox.showerror("Error", msg[:200], parent=self)  # Limit error message length
             self.status_var.set("Error")
             self.export_running = False
             self.export_paused = False
             self._set_progress_running(False)
             self._show_controls_view()
             self._update_export_controls()
+        
         elif etype == "dialogs":
             self.all_dialogs = event.get("items", [])
             self._apply_filter()
+        
         elif etype == "progress":
             count = event.get("count", 0)
             channel = event.get("channel") or "Channel"
-            self.stats_var.set(f"{channel}: {count} messages saved")
+            # Sanitize channel name
+            safe_channel = channel[:50] if len(channel) > 50 else channel
+            self.stats_var.set(f"{safe_channel}: {count} messages saved")
+        
         elif etype == "export_done":
             self._last_export_info = event
             html = event.get("html_path")
@@ -886,13 +1011,19 @@ class App(tk.Tk):
             if html:
                 self.last_export_html = html
                 self.last_export_dir = os.path.dirname(html)
-            self._append_log(f"[Done] {channel} -> {html}")
+            self._append_log(f"[Done] {channel[:50]} -> {html}")
+        
         elif etype == "status":
             message = event.get("message", "")
             if message:
+                # Limit status message length
+                if len(message) > 100:
+                    message = message[:97] + "..."
                 self.status_var.set(message)
+        
         elif etype == "export_state":
             self._handle_export_state(event.get("state"))
+        
         elif etype == "input_request":
             self._handle_input_request(event)
 
@@ -902,15 +1033,19 @@ class App(tk.Tk):
             self.export_paused = False
             self._show_controls_view()
             self._set_progress_running(True)
+        
         elif state == "paused":
             self.export_paused = True
             self._set_progress_running(False)
+        
         elif state == "resumed":
             self.export_paused = False
             self._set_progress_running(True)
+        
         elif state == "finish_requested":
             self.export_finishing = True
             self.finish_button.state(["disabled"])
+        
         elif state == "cancelled":
             self.export_finishing = False
             self.export_running = False
@@ -918,6 +1053,7 @@ class App(tk.Tk):
             self._set_progress_running(False)
             self._show_controls_view()
             self.status_var.set("Export cancelled")
+        
         elif state == "completed":
             self.export_finishing = False
             self.export_running = False
@@ -925,11 +1061,13 @@ class App(tk.Tk):
             self._set_progress_running(False)
             info = self._last_export_info or {}
             self._show_completion_view(info)
+        
         elif state == "idle":
             self.export_finishing = False
             self.export_running = False
             self.export_paused = False
             self._set_progress_running(False)
+        
         self._update_export_controls()
 
     def _handle_input_request(self, event: dict[str, Any]) -> None:
@@ -937,13 +1075,16 @@ class App(tk.Tk):
         title = event.get("title") or "Input"
         secret = bool(event.get("secret"))
         fut = event.get("future")
+        
         value = self._show_input_dialog(title=title, prompt=prompt, secret=secret)
+        
         if fut is not None:
             self.worker.resolve_future(fut, value)
 
     def _show_input_dialog(self, title: str, prompt: str, secret: bool = False) -> Optional[str]:
         if Image is None or pystray is None:
             return simpledialog.askstring(title, prompt, show='•' if secret else '', parent=self)
+        
         top = tk.Toplevel(self)
         top.title(title)
         top.configure(bg=self.colors['window'])
@@ -954,7 +1095,10 @@ class App(tk.Tk):
         frame = ttk.Frame(top, style='Card.TFrame', padding=20)
         frame.grid(row=0, column=0, sticky='nsew')
 
-        ttk.Label(frame, text=prompt, style='Body.TLabel').grid(row=0, column=0, sticky='w')
+        # Sanitize prompt (limit length)
+        safe_prompt = prompt[:200] if len(prompt) > 200 else prompt
+        ttk.Label(frame, text=safe_prompt, style='Body.TLabel').grid(row=0, column=0, sticky='w')
+        
         value_var = tk.StringVar()
         entry = ttk.Entry(frame, textvariable=value_var, show='•' if secret else '')
         entry.grid(row=1, column=0, sticky='ew', pady=(8, 16))
@@ -1062,6 +1206,14 @@ class App(tk.Tk):
         self.status_var.set('Running in tray…')
 
     def _on_exit(self) -> None:
+        # Secure cleanup
+        try:
+            self.api_id_var.clear()
+            self.api_hash_var.clear()
+            self.phone_var.clear()
+        except Exception:
+            pass
+        
         self._stop_tray_icon()
         try:
             self.worker.send_command('stop')
@@ -1085,11 +1237,15 @@ class App(tk.Tk):
     def _show_completion_view(self, info: Optional[dict[str, Any]] = None) -> None:
         info = info or {}
         channel = info.get("channel") or "Export complete"
-        self.completion_title_var.set(f"{channel} exported")
+        # Sanitize channel name
+        safe_channel = channel[:50] if len(channel) > 50 else channel
+        self.completion_title_var.set(f"{safe_channel} exported")
+        
         if self.last_export_dir and os.path.isdir(self.last_export_dir):
             self.open_folder_button.state(["!disabled"])
         else:
             self.open_folder_button.state(["disabled"])
+        
         self.export_controls_frame.grid_remove()
         self.completion_frame.grid()
 
@@ -1116,25 +1272,50 @@ class App(tk.Tk):
             self.pause_button.state(["disabled"])
             self.finish_button.state(["disabled"])
             self.pause_button.configure(text="Pause")
-            
+
     def _on_connect(self) -> None:
-        try:
-            api_id = int(self.api_id_var.get().strip())
-        except ValueError:
+        # Get and validate API ID
+        api_id_str = self.api_id_var.get().strip()
+        if not api_id_str:
             messagebox.showerror("Error", "Enter a valid API ID", parent=self)
             return
+        
+        try:
+            api_id = int(api_id_str)
+            if api_id <= 0:
+                raise ValueError("API ID must be positive")
+        except ValueError:
+            messagebox.showerror("Error", "API ID must be a valid positive integer", parent=self)
+            return
+        
+        # Validate API Hash
         api_hash = self.api_hash_var.get().strip()
         if not api_hash:
             messagebox.showerror("Error", "API Hash is required", parent=self)
             return
+        
+        if len(api_hash) != 32 or not all(c in '0123456789abcdefABCDEF' for c in api_hash):
+            response = messagebox.askyesno(
+                "Warning",
+                "API Hash format looks unusual (expected 32 hex characters). Continue anyway?",
+                parent=self
+            )
+            if not response:
+                return
+        
+        # Validate phone
         phone = self.phone_var.get().strip()
         if not phone:
             messagebox.showerror("Error", "Phone number is required", parent=self)
             return
         
-        # ═══════════════════════════════════════════════════
-        # УДАЛЕНО: вся логика с session_name
-        # ═══════════════════════════════════════════════════
+        if not phone.startswith('+'):
+            messagebox.showerror("Error", "Phone number must start with + (e.g. +1234567890)", parent=self)
+            return
+        
+        if not phone[1:].replace(' ', '').isdigit():
+            messagebox.showerror("Error", "Phone number must contain only digits after +", parent=self)
+            return
         
         self.status_var.set("Connecting...")
         self.worker.send_command(
@@ -1142,7 +1323,7 @@ class App(tk.Tk):
             api_id=api_id,
             api_hash=api_hash,
             phone=phone,
-            session_name=None,  # ← Всегда None
+            session_name=None,  # Always None - no session files
         )
 
     def _on_refresh(self) -> None:
@@ -1151,19 +1332,35 @@ class App(tk.Tk):
     def _on_export(self) -> None:
         if self.export_running:
             return
+        
         selection = self.dialog_list.curselection()
         if not selection:
             messagebox.showwarning("Attention", "Select at least one channel", parent=self)
             return
+        
         dialog_indices = [self.filtered_indices[i] for i in selection]
         refresh_seconds = None
+        
+        # Validate batch size
         try:
             batch_value = int(self.batch_var.get().strip())
-        except ValueError:
-            messagebox.showerror("Error", "Batch size must be numeric", parent=self)
+            if batch_value <= 0:
+                raise ValueError("Batch size must be positive")
+            if batch_value > 1000:
+                response = messagebox.askyesno(
+                    "Warning",
+                    "Very large batch size may cause memory issues. Continue?",
+                    parent=self
+                )
+                if not response:
+                    return
+        except ValueError as e:
+            messagebox.showerror("Error", f"Invalid batch size: {e}", parent=self)
             return
+        
         self.stats_var.set("Messages saved: 0")
         self._show_controls_view()
+        
         self.worker.send_command(
             "export",
             dialog_indices=dialog_indices,
@@ -1172,6 +1369,7 @@ class App(tk.Tk):
             refresh_seconds=refresh_seconds,
             progress_every=max(1, batch_value),
         )
+        
         self.export_running = True
         self.export_paused = False
         self.export_finishing = False
@@ -1197,14 +1395,25 @@ class App(tk.Tk):
         if not self.last_export_dir or not os.path.isdir(self.last_export_dir):
             messagebox.showinfo("Open folder", "Export directory is not available yet.", parent=self)
             return
+        
+        # SECURITY: Validate path before opening
         try:
+            # Check if path is within expected export directory
+            export_root = os.path.abspath("export")
+            target_path = os.path.abspath(self.last_export_dir)
+            
+            if not target_path.startswith(export_root):
+                messagebox.showerror("Security Error", "Invalid export path", parent=self)
+                return
+            
             if sys.platform.startswith("win"):
-                os.startfile(self.last_export_dir)  # type: ignore[attr-defined]
+                os.startfile(self.last_export_dir)
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", self.last_export_dir])
             else:
                 subprocess.Popen(["xdg-open", self.last_export_dir])
-        except Exception as exc:  # noqa: BLE001
+        
+        except Exception as exc:
             messagebox.showerror("Open folder", f"Cannot open folder: {exc}", parent=self)
 
     def _reset_after_completion(self) -> None:
@@ -1226,11 +1435,19 @@ class App(tk.Tk):
         else:
             idx = self.filtered_indices[selection[0]]
             match = next((d for d in self.all_dialogs if d.get("index") == idx), None)
-            self.channel_title_var.set(match.get("title") if match else "Channel")
+            if match:
+                title = match.get("title") or "Channel"
+                # Sanitize title for display
+                safe_title = title[:100] if len(title) > 100 else title
+                self.channel_title_var.set(safe_title)
+            else:
+                self.channel_title_var.set("Channel")
         self._update_export_controls()
 
     def _on_close(self) -> None:
         self._minimize_to_tray()
+
+
 def main() -> None:
     app = App()
     app.mainloop()
