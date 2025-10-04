@@ -32,6 +32,7 @@ class Worker:
         self._export_pause_event: Optional[asyncio.Event] = None
         self._export_cancel_event: Optional[asyncio.Event] = None
         self._export_running = False
+        self._export_finish_requested = False
         self._current_dialog_title: Optional[str] = None
 
     def start(self) -> None:
@@ -149,7 +150,9 @@ class Worker:
         self._export_pause_event.set()
         self._export_cancel_event = asyncio.Event()
         self._export_running = True
+        self._export_finish_requested = False
         self._emit("export_state", state="running")
+        completed_successfully = False
 
         try:
             for idx in indices:
@@ -173,8 +176,15 @@ class Worker:
                     refresh_seconds=refresh_seconds,
                     progress_every=progress_every,
                 )
+                if self._export_finish_requested:
+                    completed_successfully = True
+                    self._emit("status", message="Export finalized")
+                    break
                 if self._export_cancel_event.is_set():
                     raise asyncio.CancelledError()
+            else:
+                completed_successfully = True
+                self._emit("status", message="Export completed")
         except asyncio.CancelledError:
             self._emit("log", message="Export cancelled")
             self._emit("status", message="Export cancelled")
@@ -184,7 +194,10 @@ class Worker:
             self._current_dialog_title = None
             self._export_pause_event = None
             self._export_cancel_event = None
-
+            finish_requested = self._export_finish_requested
+            self._export_finish_requested = False
+            if completed_successfully or finish_requested:
+                self._emit("export_state", state="completed")
     async def _run_single_export(
         self,
         dialog,
@@ -256,6 +269,7 @@ class Worker:
                 on_media=on_media_event,
                 pause_event=self._export_pause_event,
                 cancel_event=self._export_cancel_event,
+                is_finish_requested=lambda: self._export_finish_requested,
                 skip_dangerous=block_dangerous,
             )
         except asyncio.CancelledError:
@@ -276,38 +290,43 @@ class Worker:
             channel=title,
         )
         self._emit("status", message=f"Export finished: {title}")
-        self._emit("export_state", state="completed")
 
-    async def _cmd_pause_export(self) -> None:
-        if not self._export_running or not self._export_pause_event:
-            raise RuntimeError("No export to pause")
+    def request_pause(self) -> bool:
+        if not self._export_running or not self._export_pause_event or not self.loop:
+            return False
         if not self._export_pause_event.is_set():
-            return
-        self._export_pause_event.clear()
+            return False
+        self.loop.call_soon_threadsafe(self._export_pause_event.clear)
         self._emit("status", message="Export paused")
         self._emit("log", message="Export paused")
         self._emit("export_state", state="paused")
+        return True
 
-    async def _cmd_resume_export(self) -> None:
-        if not self._export_running or not self._export_pause_event:
-            raise RuntimeError("No export to resume")
+    def request_resume(self) -> bool:
+        if not self._export_running or not self._export_pause_event or not self.loop:
+            return False
         if self._export_pause_event.is_set():
-            return
-        self._export_pause_event.set()
+            return False
+        self.loop.call_soon_threadsafe(self._export_pause_event.set)
         self._emit("status", message="Resuming export")
         self._emit("log", message="Resuming export")
         self._emit("export_state", state="resumed")
+        return True
 
-    async def _cmd_cancel_export(self) -> None:
-        if not self._export_running or not self._export_cancel_event:
-            raise RuntimeError("No export to cancel")
-        if self._export_cancel_event.is_set():
-            return
-        self._export_cancel_event.set()
+    def request_finish(self) -> bool:
+        if not self._export_running or not self._export_cancel_event or not self.loop:
+            return False
+        if self._export_finish_requested:
+            return False
+        self._export_finish_requested = True
+        self.loop.call_soon_threadsafe(self._export_cancel_event.set)
         if self._export_pause_event:
-            self._export_pause_event.set()
-        self._emit("log", message="Cancel requested")
-        self._emit("export_state", state="cancel_requested")
+            self.loop.call_soon_threadsafe(self._export_pause_event.set)
+        self._emit("log", message="Finishing export with current data...")
+        self._emit("status", message="Finalizing export")
+        self._emit("export_state", state="finish_requested")
+        return True
+
 
     async def _run_input_dialog(self, prompt: str, title: str, secret: bool = False) -> str:
         fut: asyncio.Future = self.loop.create_future()
@@ -371,7 +390,7 @@ class App(tk.Tk):
         self.search_var = tk.StringVar()
 
         self.status_var = tk.StringVar(value="Welcome")
-        self.stats_var = tk.StringVar(value="Messages saved: ?")
+        self.stats_var = tk.StringVar(value="Messages saved: 0")
         self.channel_title_var = tk.StringVar(value="Select a channel to export")
 
         self.all_dialogs: list[dict[str, Any]] = []
@@ -379,6 +398,7 @@ class App(tk.Tk):
         self.export_running = False
         self.export_paused = False
         self.progress_animating = False
+        self.export_finishing = False
         self._last_export_info: Optional[dict[str, Any]] = None
         self.last_export_html: Optional[str] = None
         self.last_export_dir: Optional[str] = None
@@ -618,11 +638,11 @@ class App(tk.Tk):
         self.start_button.grid(row=0, column=0, sticky="ew")
         self.pause_button = ttk.Button(self.export_controls_frame, text="Pause", style="Secondary.TButton", command=self._on_pause_resume)
         self.pause_button.grid(row=0, column=1, sticky="ew", padx=12)
-        self.cancel_button = ttk.Button(self.export_controls_frame, text="Cancel", style="Secondary.TButton", command=self._on_cancel)
-        self.cancel_button.grid(row=0, column=2, sticky="ew")
+        self.finish_button = ttk.Button(self.export_controls_frame, text="Finish now", style="Secondary.TButton", command=self._on_finish)
+        self.finish_button.grid(row=0, column=2, sticky="ew")
 
         self.pause_button.state(["disabled"])
-        self.cancel_button.state(["disabled"])
+        self.finish_button.state(["disabled"])
 
         self.completion_frame = ttk.Frame(card, style="CardInner.TFrame")
         self.completion_frame.columnconfigure(0, weight=1)
@@ -680,12 +700,12 @@ class App(tk.Tk):
         query = self.search_var.get().strip().lower()
         self.dialog_list.delete(0, tk.END)
         self.filtered_indices.clear()
-        icon_map = {"channel": "??", "group": "??", "user": "??"}
+        icon_map = {"channel": "[CH]", "group": "[GR]", "user": "[DM]"}
         for item in self.all_dialogs:
             title = item.get("title", "")
             if query and query not in title.lower():
                 continue
-            icon = icon_map.get(item.get("kind"), "?")
+            icon = icon_map.get(item.get("kind"), "[--]")
             entry = f"{icon}  {title}"
             self.dialog_list.insert(tk.END, entry)
             self.filtered_indices.append(item["index"])
@@ -739,7 +759,7 @@ class App(tk.Tk):
             if html:
                 self.last_export_html = html
                 self.last_export_dir = os.path.dirname(html)
-            self._append_log(f"[Done] {channel} ? {html}")
+            self._append_log(f"[Done] {channel} -> {html}")
         elif etype == "status":
             message = event.get("message", "")
             if message:
@@ -761,21 +781,25 @@ class App(tk.Tk):
         elif state == "resumed":
             self.export_paused = False
             self._set_progress_running(True)
-        elif state == "cancel_requested":
-            self.cancel_button.state(["disabled"])
+        elif state == "finish_requested":
+            self.export_finishing = True
+            self.finish_button.state(["disabled"])
         elif state == "cancelled":
+            self.export_finishing = False
             self.export_running = False
             self.export_paused = False
             self._set_progress_running(False)
             self._show_controls_view()
             self.status_var.set("Export cancelled")
         elif state == "completed":
+            self.export_finishing = False
             self.export_running = False
             self.export_paused = False
             self._set_progress_running(False)
             info = self._last_export_info or {}
             self._show_completion_view(info)
         elif state == "idle":
+            self.export_finishing = False
             self.export_running = False
             self.export_paused = False
             self._set_progress_running(False)
@@ -824,7 +848,10 @@ class App(tk.Tk):
         if self.export_running:
             self.start_button.state(["disabled"])
             self.pause_button.state(["!disabled"])
-            self.cancel_button.state(["!disabled"])
+            if self.export_finishing:
+                self.finish_button.state(["disabled"])
+            else:
+                self.finish_button.state(["!disabled"])
             self.pause_button.configure(text="Resume" if self.export_paused else "Pause")
         else:
             selection = bool(self.dialog_list.curselection())
@@ -833,7 +860,7 @@ class App(tk.Tk):
             else:
                 self.start_button.state(["disabled"])
             self.pause_button.state(["disabled"])
-            self.cancel_button.state(["disabled"])
+            self.finish_button.state(["disabled"])
             self.pause_button.configure(text="Pause")
 
     def _on_connect(self) -> None:
@@ -901,14 +928,16 @@ class App(tk.Tk):
         if not self.export_running:
             return
         if self.export_paused:
-            self.worker.send_command("resume_export")
+            self.worker.request_resume()
         else:
-            self.worker.send_command("pause_export")
+            self.worker.request_pause()
 
-    def _on_cancel(self) -> None:
+    def _on_finish(self) -> None:
         if not self.export_running:
             return
-        self.worker.send_command("cancel_export")
+        if self.worker.request_finish():
+            self.finish_button.state(["disabled"])
+            self.pause_button.state(["disabled"])
 
     def _open_last_export(self) -> None:
         if not self.last_export_dir or not os.path.isdir(self.last_export_dir):
@@ -928,7 +957,7 @@ class App(tk.Tk):
         self._last_export_info = None
         self.last_export_html = None
         self.last_export_dir = None
-        self.stats_var.set("Messages saved: ?")
+        self.stats_var.set("Messages saved: 0")
         self.status_var.set("Ready")
         self._show_controls_view()
         self._update_export_controls()

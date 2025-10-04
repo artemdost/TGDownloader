@@ -201,6 +201,7 @@ async def dump_dialog_to_json_and_media(
     on_media: Optional[Callable[[Dict[str, Any]], None]] = None,
     pause_event: Optional[asyncio.Event] = None,
     cancel_event: Optional[asyncio.Event] = None,
+    is_finish_requested: Optional[Callable[[], bool]] = None,
     skip_dangerous: bool = True,   # <<<
 ) -> Tuple[str, str]:
     """
@@ -270,6 +271,8 @@ async def dump_dialog_to_json_and_media(
     cancelled = False
 
     async for msg in client.iter_messages(entity, reverse=True):
+        if is_finish_requested and is_finish_requested():
+            break
         if cancel_event and cancel_event.is_set():
             cancelled = True
             break
@@ -278,8 +281,10 @@ async def dump_dialog_to_json_and_media(
                 if cancel_event and cancel_event.is_set():
                     cancelled = True
                     break
+                if is_finish_requested and is_finish_requested():
+                    break
                 await asyncio.sleep(0.1)
-            if cancelled:
+            if cancelled or (is_finish_requested and is_finish_requested()):
                 break
 
         if not isinstance(msg, Message):
@@ -346,7 +351,7 @@ async def dump_dialog_to_json_and_media(
 
     log.info("Done. Total messages: %s. JSON: %s. Media: %s", count, json_path, media_dir_abs)
 
-    if cancel_event and cancel_event.is_set():
+    if cancel_event and cancel_event.is_set() and not (is_finish_requested and is_finish_requested()):
         raise asyncio.CancelledError()
 
     return json_path, media_dir_abs
