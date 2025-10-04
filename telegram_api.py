@@ -2,7 +2,8 @@
 import os
 import getpass
 import logging
-from typing import List
+import inspect
+from typing import Awaitable, Callable, List, Optional, Union
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
@@ -10,22 +11,76 @@ from telethon.errors import SessionPasswordNeededError
 
 log = logging.getLogger("telegram_api")
 
-async def authorize():
-    api_id = int(input("Введите API ID: ").strip())
-    api_hash = input("Введите API HASH: ").strip()
-    phone = input("Введите номер телефона (с +7...): ").strip()
+async def authorize(
+    api_id: Optional[int] = None,
+    api_hash: Optional[str] = None,
+    phone: Optional[str] = None,
+    session_name: Optional[str] = None,
+    code_callback: Optional[Callable[..., Union[str, Awaitable[str], None]]] = None,
+    password_callback: Optional[Callable[..., Union[str, Awaitable[str], None]]] = None,
+) -> TelegramClient:
+    """Shared authorization helper for CLI (interactive) and GUI (callbacks)."""
 
-    # сессию делаем временной (без имени файла → хранится в памяти)
-    client = TelegramClient(None, api_id, api_hash)
+    def _stringify(value, field_name: str) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+        else:
+            cleaned = str(value).strip()
+        if not cleaned:
+            raise ValueError(f"{field_name} must not be empty")
+        return cleaned
+
+    async def _request(cb: Callable[..., Union[str, Awaitable[str], None]], prompt: str) -> Optional[str]:
+        try:
+            result = cb(prompt)
+        except TypeError:
+            result = cb()
+        if inspect.isawaitable(result):
+            result = await result
+        if result is None:
+            return None
+        return str(result).strip() or None
+
+    if api_id is None:
+        api_id_str = input("Enter API ID: ").strip()
+    else:
+        api_id_str = str(api_id).strip()
+    if not api_id_str:
+        raise ValueError("API ID must not be empty")
+    api_id = int(api_id_str)
+
+    if api_hash is None:
+        api_hash = input("Enter API HASH: ").strip()
+    else:
+        api_hash = _stringify(api_hash, "API HASH")
+
+    if phone is None:
+        phone = input("Enter phone number (e.g. +7...): ").strip()
+    else:
+        phone = _stringify(phone, "phone")
+
+    client = TelegramClient(session_name, api_id, api_hash)
 
     await client.connect()
     if not await client.is_user_authorized():
         await client.send_code_request(phone)
-        code = input("Введите код из Telegram: ").strip()
+        if code_callback:
+            code = await _request(code_callback, "Enter code from Telegram: ")
+        else:
+            code = input("Enter code from Telegram: ").strip()
+        if not code:
+            raise ValueError("Telegram code is required")
         try:
             await client.sign_in(phone=phone, code=code)
         except SessionPasswordNeededError:
-            pwd = getpass.getpass("Введите пароль 2FA: ")
+            if password_callback:
+                pwd = await _request(password_callback, "Enter 2FA password: ")
+            else:
+                pwd = getpass.getpass("Enter 2FA password: ")
+            if not pwd:
+                raise ValueError("2FA password is required")
             await client.sign_in(password=pwd)
 
     return client
