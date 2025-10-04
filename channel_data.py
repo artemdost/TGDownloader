@@ -1,4 +1,5 @@
 # channel_data.py
+import asyncio
 import os
 import re
 import json
@@ -164,6 +165,7 @@ async def _download_one_message_media(
 
     return items
 
+
 def _make_sender_display(sender, alias_map: Dict[int, str], alias_counter: Dict[str, int]) -> dict:
     if not sender:
         return {"id": None, "username": None, "name": None, "display": "Channel"}
@@ -197,6 +199,8 @@ async def dump_dialog_to_json_and_media(
     on_progress: Optional[Callable[[str, str, int], None]] = None,
     on_message: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_media: Optional[Callable[[Dict[str, Any]], None]] = None,
+    pause_event: Optional[asyncio.Event] = None,
+    cancel_event: Optional[asyncio.Event] = None,
     skip_dangerous: bool = True,   # <<<
 ) -> Tuple[str, str]:
     """
@@ -263,7 +267,21 @@ async def dump_dialog_to_json_and_media(
         except Exception as e:
             log.warning("on_progress (initial) callback failed: %s", e)
 
+    cancelled = False
+
     async for msg in client.iter_messages(entity, reverse=True):
+        if cancel_event and cancel_event.is_set():
+            cancelled = True
+            break
+        if pause_event:
+            while not pause_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    cancelled = True
+                    break
+                await asyncio.sleep(0.1)
+            if cancelled:
+                break
+
         if not isinstance(msg, Message):
             continue
         if getattr(msg, "id", None) in processed_ids:
@@ -327,4 +345,9 @@ async def dump_dialog_to_json_and_media(
             log.warning("on_progress (final) callback failed: %s", e)
 
     log.info("Done. Total messages: %s. JSON: %s. Media: %s", count, json_path, media_dir_abs)
+
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
+
     return json_path, media_dir_abs
+
