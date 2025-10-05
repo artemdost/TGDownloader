@@ -11,6 +11,11 @@ from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Optional
 import ctypes
 import hashlib
+from logo_helper import load_logo_image
+from PIL import ImageTk
+from logo_helper import create_tray_icon
+from logo_helper import load_logo_image, create_canvas_logo, create_tray_icon
+
 
 from process_hardening import harden_process
 from channel_data import dump_dialog_to_json_and_media
@@ -575,6 +580,15 @@ class App(tk.Tk):
         self.geometry("1180x720")
         self.minsize(1100, 700)
 
+        # Иконка окна
+        try:
+            from logo_helper import get_resource_path
+            icon_path = get_resource_path("icon.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception:
+            pass
+
         self.colors = self._setup_theme()
         self.configure(bg=self.colors["window"])
 
@@ -730,18 +744,19 @@ class App(tk.Tk):
         self._build_export_card(cards_frame)
 
         self._build_logs_card()
-
     def _build_header(self, parent: ttk.Frame) -> None:
-        logo = tk.Canvas(parent, width=56, height=56, highlightthickness=0, bg=self.colors["glass"], bd=0)
-        logo.grid(row=0, column=0, rowspan=2, sticky="w")
-        logo.create_oval(4, 4, 52, 52, fill=self.colors["accent"], outline="")
-        logo.create_polygon(20, 18, 40, 26, 24, 30, 20, 46, 16, 32, outline="", fill=self.colors["accent_contrast"])
-
-        title = ttk.Label(parent, text="Telegram Export Studio", style="Header.TLabel")
-        title.grid(row=0, column=1, sticky="w")
-        subtitle = ttk.Label(parent, text="Connect your private channels and archive everything with a single click.", style="Caption.TLabel")
-        subtitle.grid(row=1, column=1, sticky="w", pady=(4, 0))
-
+        
+        logo_img = load_logo_image(56)
+        if logo_img:
+            logo_canvas = tk.Canvas(parent, width=56, height=56, highlightthickness=0, bg=self.colors["glass"], bd=0)
+            logo_canvas.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 12))
+            photo = ImageTk.PhotoImage(logo_img)
+            logo_canvas.create_image(0, 0, image=photo, anchor='nw')
+            logo_canvas._logo_photo = photo
+        
+        ttk.Label(parent, text="Telegram Export Studio", style="Header.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Label(parent, text="Connect your private channels and archive everything with a single click.", style="Caption.TLabel").grid(row=1, column=1, sticky="w", pady=(4, 0))
+        
         action_row = ttk.Frame(parent, style="Glass.TFrame")
         action_row.grid(row=0, column=2, rowspan=2, sticky="e")
         ttk.Button(action_row, text="Hide to tray", style="Secondary.TButton", command=self._minimize_to_tray).grid(row=0, column=0, padx=(0, 8))
@@ -1144,16 +1159,12 @@ class App(tk.Tk):
         x = parent_x + max((parent_w - w) // 2, 0)
         y = parent_y + max((parent_h - h) // 2, 0)
         window.geometry('{}x{}+{}+{}'.format(w, h, x, y))
-
+    
     def _create_tray_image(self):
-        if Image is None or ImageDraw is None:
+        if Image is None:
             return None
-        size = 64
-        image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((8, 8, 56, 56), fill=self.colors.get('accent', '#229ED9'))
-        draw.polygon((26, 22, 44, 30, 30, 34, 26, 50, 22, 36), fill=self.colors.get('accent_contrast', '#FFFFFF'))
-        return image
+        tray_img = create_tray_icon(64)
+        return tray_img if tray_img else Image.new('RGBA', (64, 64), (0, 0, 0, 0))
 
     def _start_tray_icon(self) -> None:
         if self._tray_active or pystray is None:
