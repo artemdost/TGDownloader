@@ -18,10 +18,10 @@ def get_resource_path(relative_path: str) -> str:
         # PyInstaller создаёт временную папку и сохраняет путь в _MEIPASS
         base_path = sys._MEIPASS
     except AttributeError:
-        # В режиме разработки используем текущую директорию
-        base_path = os.path.abspath(".")
-    
-    return os.path.join(base_path, relative_path)
+        # В режиме разработки используем корневую директорию проекта
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    return os.path.join(base_path, "assets", relative_path)
 
 
 def load_logo_image(size: int = 64) -> Optional[Image.Image]:
@@ -37,9 +37,7 @@ def load_logo_image(size: int = 64) -> Optional[Image.Image]:
     # Пробуем найти кастомное лого
     logo_paths = [
         get_resource_path(f"logo_{size}.png"),
-        get_resource_path("logo.png"),
-        f"logo_{size}.png",
-        "logo.png"
+        get_resource_path("logo.png")
     ]
     
     for path in logo_paths:

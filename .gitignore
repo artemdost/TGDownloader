@@ -1,11 +1,30 @@
+# Build artifacts
 build/
 dist/
+*.egg-info/
+
+# Virtual environment
 venv/
+.venv/
+
+# Export data
 export/
-__pycache__/
-*.session*
-# Python bytecode / cache
+
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
-*.spec
+*.so
+
+# Telegram sessions (security)
+*.session*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

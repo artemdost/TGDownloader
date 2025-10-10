@@ -11,14 +11,10 @@ from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Optional
 import ctypes
 import hashlib
-from logo_helper import load_logo_image
+from .logo_helper import load_logo_image, create_canvas_logo, create_tray_icon
 from PIL import ImageTk
-from logo_helper import create_tray_icon
-from logo_helper import load_logo_image, create_canvas_logo, create_tray_icon
-
-
-from process_hardening import harden_process
-from channel_data import dump_dialog_to_json_and_media
+from .process_hardening import harden_process
+from .channel_data import dump_dialog_to_json_and_media
 
 try:
     import pystray
@@ -28,13 +24,13 @@ except Exception:
     Image = None
     ImageDraw = None
 
-from html_generator import generate_html
-from telegram_api import authorize, list_user_dialogs
+from .html_generator import generate_html
+from .telegram_api import authorize, list_user_dialogs
 
 # Apply crash-dump hardening in GUI mode as well
 harden_process()
 
-DEFAULT_PROGRESS_EVERY = 50
+DEFAULT_PROGRESS_EVERY = 5
 
 # ═══════════════════════════════════════════════════
 # SECURITY: SECURE CREDENTIAL STORAGE
@@ -582,7 +578,7 @@ class App(tk.Tk):
 
         # Иконка окна
         try:
-            from logo_helper import get_resource_path
+            from .logo_helper import get_resource_path
             icon_path = get_resource_path("icon.ico")
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
@@ -602,7 +598,6 @@ class App(tk.Tk):
         self.phone_var = SecureVar()
         
         # Non-sensitive vars
-        self.anonymize_var = tk.BooleanVar(value=False)
         self.block_dangerous_var = tk.BooleanVar(value=True)
         self.batch_var = tk.StringVar(value=str(DEFAULT_PROGRESS_EVERY))
         self.search_var = tk.StringVar()
@@ -754,13 +749,8 @@ class App(tk.Tk):
             logo_canvas.create_image(0, 0, image=photo, anchor='nw')
             logo_canvas._logo_photo = photo
         
-        ttk.Label(parent, text="Telegram Export Studio", style="Header.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Label(parent, text="Connect your private channels and archive everything with a single click.", style="Caption.TLabel").grid(row=1, column=1, sticky="w", pady=(4, 0))
-        
-        action_row = ttk.Frame(parent, style="Glass.TFrame")
-        action_row.grid(row=0, column=2, rowspan=2, sticky="e")
-        ttk.Button(action_row, text="Hide to tray", style="Secondary.TButton", command=self._minimize_to_tray).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(action_row, text="Exit", style="Accent.TButton", command=self._on_exit).grid(row=0, column=1)
+        ttk.Label(parent, text="Telegram Export Studio", style="Header.TLabel").grid(row=0, column=1, sticky="w", columnspan=2)
+        ttk.Label(parent, text="Connect your private channels and archive everything with a single click.", style="Caption.TLabel").grid(row=1, column=1, sticky="w", pady=(4, 0), columnspan=2)
 
     def _build_connect_card(self, parent: ttk.Frame) -> None:
         card = ttk.Frame(parent, style="Card.TFrame", padding=20)
@@ -862,24 +852,18 @@ class App(tk.Tk):
         self.channel_label = ttk.Label(card, textvariable=self.channel_title_var, style="Info.TLabel")
         self.channel_label.grid(row=1, column=0, sticky="w", pady=(4, 12))
 
-        options = ttk.Frame(card, style="CardInner.TFrame")
-        options.grid(row=2, column=0, sticky="ew")
-        options.columnconfigure(0, weight=1)
-        options.columnconfigure(1, weight=1)
+        ttk.Checkbutton(card, text="Block risky attachments", variable=self.block_dangerous_var).grid(row=2, column=0, sticky="w", pady=(8, 16))
 
-        ttk.Checkbutton(card, text="Anonymize sender names", variable=self.anonymize_var).grid(row=3, column=0, sticky="w", pady=(8, 0))
-        ttk.Checkbutton(card, text="Block risky attachments", variable=self.block_dangerous_var).grid(row=4, column=0, sticky="w", pady=(4, 16))
-
-        ttk.Label(card, text="Batch size", style="Body.TLabel").grid(row=5, column=0, sticky="w")
+        ttk.Label(card, text="Batch size", style="Body.TLabel").grid(row=3, column=0, sticky="w")
         self.batch_entry = ttk.Entry(card, textvariable=self.batch_var, width=8)
-        self.batch_entry.grid(row=6, column=0, sticky="w", pady=(4, 0))
+        self.batch_entry.grid(row=4, column=0, sticky="w", pady=(4, 0))
 
         self.progress_bar = ttk.Progressbar(card, style="Accent.Horizontal.TProgressbar", mode="determinate")
-        self.progress_bar.grid(row=7, column=0, sticky="ew", pady=(24, 8))
-        ttk.Label(card, textvariable=self.stats_var, style="Info.TLabel").grid(row=8, column=0, sticky="w")
+        self.progress_bar.grid(row=5, column=0, sticky="ew", pady=(24, 8))
+        ttk.Label(card, textvariable=self.stats_var, style="Info.TLabel").grid(row=6, column=0, sticky="w")
 
         self.export_controls_frame = ttk.Frame(card, style="CardInner.TFrame")
-        self.export_controls_frame.grid(row=9, column=0, sticky="ew", pady=(24, 0))
+        self.export_controls_frame.grid(row=7, column=0, sticky="ew", pady=(24, 0))
         self.export_controls_frame.columnconfigure(0, weight=1)
         self.export_controls_frame.columnconfigure(1, weight=1)
         self.export_controls_frame.columnconfigure(2, weight=1)
@@ -896,7 +880,7 @@ class App(tk.Tk):
 
         self.completion_frame = ttk.Frame(card, style="CardInner.TFrame")
         self.completion_frame.columnconfigure(0, weight=1)
-        self.completion_frame.grid(row=9, column=0, sticky="ew", pady=(24, 0))
+        self.completion_frame.grid(row=7, column=0, sticky="ew", pady=(24, 0))
         self.completion_title_var = tk.StringVar(value="Export complete")
         ttk.Label(self.completion_frame, text="✓", font=("Inter", 26), background=self.colors["card"], foreground=self.colors["accent"]).grid(row=0, column=0, pady=(0, 4))
         ttk.Label(self.completion_frame, textvariable=self.completion_title_var, style="Title.TLabel").grid(row=1, column=0, pady=(0, 4))
@@ -1380,7 +1364,7 @@ class App(tk.Tk):
         self.worker.send_command(
             "export",
             dialog_indices=dialog_indices,
-            anonymize=self.anonymize_var.get(),
+            anonymize=False,
             block_dangerous=self.block_dangerous_var.get(),
             refresh_seconds=refresh_seconds,
             progress_every=max(1, batch_value),
