@@ -170,55 +170,55 @@ class Worker:
             try:
                 os.remove(session_file)
                 session_files_deleted.append(session_file)
-                self._emit("log", message=f"🗑️ Deleted: {session_file}")
+                self._emit("log", message=f"🗑️ Удалено: {session_file}")
                 continue
             except PermissionError:
                 pass
             except Exception as e:
-                self._emit("log", message=f"❌ Error deleting {session_file}: {e}")
+                self._emit("log", message=f"❌ Ошибка удаления {session_file}: {e}")
                 session_files_failed.append(session_file)
                 continue
-            
+
             # Attempt 2: Wait and retry
             try:
                 time.sleep(0.3)
                 os.remove(session_file)
                 session_files_deleted.append(session_file)
-                self._emit("log", message=f"🗑️ Deleted (retry): {session_file}")
+                self._emit("log", message=f"🗑️ Удалено (повтор): {session_file}")
                 continue
             except Exception:
                 pass
-            
+
             # Attempt 3: Rename for deletion on next start
             try:
                 trash_name = f"{session_file}.DELETE_ME_{int(time.time())}"
                 os.rename(session_file, trash_name)
-                self._emit("log", message=f"🔄 Marked for deletion: {session_file}")
+                self._emit("log", message=f"🔄 Помечено для удаления: {session_file}")
                 try:
                     os.remove(trash_name)
                     session_files_deleted.append(session_file)
-                    self._emit("log", message=f"🗑️ Deleted (renamed): {session_file}")
+                    self._emit("log", message=f"🗑️ Удалено (переименовано): {session_file}")
                 except Exception:
                     session_files_failed.append(session_file)
-                    self._emit("log", message=f"⚠️ Will be deleted on next start: {trash_name}")
+                    self._emit("log", message=f"⚠️ Будет удалено при следующем запуске: {trash_name}")
             except Exception as e:
                 session_files_failed.append(session_file)
-                self._emit("log", message=f"❌ Cannot process {session_file}: {e}")
-        
+                self._emit("log", message=f"❌ Не удалось обработать {session_file}: {e}")
+
         # Clean up old .DELETE_ME files
         for old_trash in glob.glob("*.DELETE_ME_*"):
             try:
                 os.remove(old_trash)
-                self._emit("log", message=f"🗑️ Cleaned old trash: {old_trash}")
+                self._emit("log", message=f"🗑️ Очищен старый мусор: {old_trash}")
             except Exception:
                 pass
-        
+
         if session_files_deleted:
-            self._emit("log", message=f"✅ Cleaned up {len(session_files_deleted)} session file(s)")
+            self._emit("log", message=f"✅ Очищено {len(session_files_deleted)} файл(ов) сессий")
         if session_files_failed:
-            self._emit("log", message=f"⚠️ {len(session_files_failed)} file(s) require restart to delete")
-        
-        self._emit("status", message="Disconnected (sessions cleaned)")
+            self._emit("log", message=f"⚠️ {len(session_files_failed)} файл(ов) требуют перезапуска для удаления")
+
+        self._emit("status", message="Отключено (сессии очищены)")
         self._emit("export_state", state="idle")
 
     async def _cmd_connect(
@@ -255,13 +255,13 @@ class Worker:
             or getattr(me, "last_name", None)
             or "account"
         )
-        self._emit("status", message=f"Connected: {identity[:20]}")  # Limit length
-        self._emit("log", message="Authorization successful")
+        self._emit("status", message=f"Подключено: {identity[:20]}")  # Limit length
+        self._emit("log", message="Авторизация успешна")
         await self._send_dialogs()
 
     async def _cmd_refresh_dialogs(self) -> None:
         if not self.client:
-            raise RuntimeError("Connect your account first")
+            raise RuntimeError("Сначала подключите свой аккаунт")
         await self._send_dialogs()
 
     async def _cmd_export(
@@ -273,13 +273,13 @@ class Worker:
         progress_every: int,
     ) -> None:
         if not self.client:
-            raise RuntimeError("Connect your account first")
+            raise RuntimeError("Сначала подключите свой аккаунт")
         if self._export_running:
-            raise RuntimeError("Export already in progress")
-        
+            raise RuntimeError("Экспорт уже выполняется")
+
         indices = list(dict.fromkeys(dialog_indices))
         if not indices:
-            raise RuntimeError("Select a channel to export")
+            raise RuntimeError("Выберите канал для экспорта")
 
         self._export_pause_event = asyncio.Event()
         self._export_pause_event.set()
@@ -292,23 +292,23 @@ class Worker:
         try:
             for idx in indices:
                 if idx < 0 or idx >= len(self.dialogs):
-                    raise RuntimeError("Selected dialog is out of range")
-                
+                    raise RuntimeError("Выбранный диалог вне диапазона")
+
                 dialog = self.dialogs[idx]
                 title = (
                     getattr(dialog.entity, "title", None)
                     or getattr(dialog.entity, "first_name", None)
                     or getattr(dialog.entity, "last_name", None)
-                    or "Channel"
+                    or "Канал"
                 )
-                
+
                 # Sanitize title for logging
-                safe_title = title[:50] if title else "Channel"
-                
+                safe_title = title[:50] if title else "Канал"
+
                 self._current_dialog_title = safe_title
-                self._emit("status", message=f"Preparing export: {safe_title}")
-                self._emit("log", message=f"Starting export: {safe_title}")
-                
+                self._emit("status", message=f"Подготовка экспорта: {safe_title}")
+                self._emit("log", message=f"Начало экспорта: {safe_title}")
+
                 await self._run_single_export(
                     dialog=dialog,
                     title=title,
@@ -317,21 +317,21 @@ class Worker:
                     refresh_seconds=refresh_seconds,
                     progress_every=progress_every,
                 )
-                
+
                 if self._export_finish_requested:
                     completed_successfully = True
-                    self._emit("status", message="Export finalized")
+                    self._emit("status", message="Экспорт завершен")
                     break
-                
+
                 if self._export_cancel_event.is_set():
                     raise asyncio.CancelledError()
             else:
                 completed_successfully = True
-                self._emit("status", message="Export completed")
-        
+                self._emit("status", message="Экспорт завершен")
+
         except asyncio.CancelledError:
-            self._emit("log", message="Export cancelled")
-            self._emit("status", message="Export cancelled")
+            self._emit("log", message="Экспорт отменен")
+            self._emit("status", message="Экспорт отменен")
             self._emit("export_state", state="cancelled")
         
         finally:
@@ -353,8 +353,8 @@ class Worker:
         refresh_seconds: Optional[int],
         progress_every: int,
     ) -> None:
-        safe_title = title[:50] if title else "Channel"
-        
+        safe_title = title[:50] if title else "Канал"
+
         def on_progress(json_path: str, media_dir: str, count: int) -> None:
             self._emit(
                 "progress",
@@ -367,87 +367,87 @@ class Worker:
         def on_message(info: dict[str, Any]) -> None:
             msg_id = info.get("id")
             count = info.get("count")
-            
+
             summary_parts = []
             if count is not None:
                 summary_parts.append(f"#{count}")
             if msg_id is not None:
                 summary_parts.append(f"id {msg_id}")
-            
-            header = "Message " + " ".join(summary_parts) if summary_parts else "Message"
-            
+
+            header = "Сообщение " + " ".join(summary_parts) if summary_parts else "Сообщение"
+
             text_raw = info.get("text") or ""
             text_snippet = " ".join(text_raw.splitlines()).strip()
-            
+
             # Limit text length in logs
             if len(text_snippet) > 100:
                 text_snippet = f"{text_snippet[:97]}..."
-            
-            body = text_snippet or "(no text)"
+
+            body = text_snippet or "(нет текста)"
             self._emit("log", message=f"[{safe_title}] {header}: {body}")
-            
+
             for media in info.get("media") or []:
-                kind = media.get("kind") or "file"
+                kind = media.get("kind") or "файл"
                 if kind == "blocked":
-                    name = media.get("name") or "file"
-                    reason = media.get("reason") or "blocked"
-                    self._emit("log", message=f"  blocked {name} ({reason})")
+                    name = media.get("name") or "файл"
+                    reason = media.get("reason") or "заблокирован"
+                    self._emit("log", message=f"  заблокирован {name} ({reason})")
                 else:
-                    path_hint = media.get("path") or media.get("name") or "unknown"
-                    self._emit("log", message=f"  saved {kind}: {path_hint}")
+                    path_hint = media.get("path") or media.get("name") or "неизвестно"
+                    self._emit("log", message=f"  сохранено {kind}: {path_hint}")
 
         def on_media_event(info: dict[str, Any]) -> None:
             stage = info.get("stage")
-            kind = (info.get("kind") or "file").strip()
-            name = (info.get("name") or info.get("path") or "media").strip()
+            kind = (info.get("kind") or "файл").strip()
+            name = (info.get("name") or info.get("path") or "медиа").strip()
             message_id = info.get("message_id")
-            
+
             # Limit name length
             if len(name) > 50:
                 name = name[:47] + "..."
-            
+
             key = (safe_title, name)
-            label = f"Downloading {kind}: {name}"
+            label = f"Загрузка {kind}: {name}"
             if message_id is not None:
-                label = f"{label} (msg {message_id})"
+                label = f"{label} (сообщение {message_id})"
 
             if stage == "start":
                 self._media_progress[key] = -1
                 self._media_labels[key] = label
                 self._emit("log", message=f"[{safe_title}] {label}")
                 self._emit("status", message=label)
-            
+
             elif stage == "progress":
                 percent = info.get("percent")
                 current = info.get("current")
                 total = info.get("total")
                 prev = self._media_progress.get(key, -1)
-                
+
                 if percent is not None:
                     if percent != prev:
                         self._media_progress[key] = percent
                         status = f"{label} {percent}%"
                         self._emit("status", message=status)
                 else:
-                    status = f"{label} {current or 0}/{total or '?'} bytes"
+                    status = f"{label} {current or 0}/{total or '?'} байт"
                     self._emit("status", message=status)
-            
+
             elif stage == "complete":
                 self._media_progress.pop(key, None)
                 self._media_labels.pop(key, None)
-                self._emit("log", message=f"[{safe_title}] Saved {kind}: {name}")
-                self._emit("status", message=f"Saved {kind}: {name}")
-            
+                self._emit("log", message=f"[{safe_title}] Сохранено {kind}: {name}")
+                self._emit("status", message=f"Сохранено {kind}: {name}")
+
             elif stage == "blocked":
-                reason = info.get("reason") or "blocked"
+                reason = info.get("reason") or "заблокирован"
                 self._media_progress.pop(key, None)
                 self._media_labels.pop(key, None)
-                self._emit("log", message=f"[{safe_title}] Blocked {kind}: {name} ({reason})")
+                self._emit("log", message=f"[{safe_title}] Заблокирован {kind}: {name} ({reason})")
             
             elif stage == "error":
                 self._media_progress.pop(key, None)
                 self._media_labels.pop(key, None)
-                self._emit("log", message=f"[{safe_title}] Failed {kind}: {name}")
+                self._emit("log", message=f"[{safe_title}] Ошибка {kind}: {name}")
 
         try:
             json_path, media_dir = await dump_dialog_to_json_and_media(
@@ -465,7 +465,7 @@ class Worker:
             )
         except asyncio.CancelledError:
             raise
-        
+
         html_path = generate_html(
             json_path=json_path,
             media_root=media_dir,
@@ -474,7 +474,7 @@ class Worker:
             anonymize=anonymize,
             csp=True,
         )
-        
+
         self._emit(
             "export_done",
             json_path=json_path,
@@ -482,17 +482,17 @@ class Worker:
             html_path=html_path,
             channel=safe_title,
         )
-        self._emit("status", message=f"Export finished: {safe_title}")
+        self._emit("status", message=f"Экспорт завершен: {safe_title}")
 
     def request_pause(self) -> bool:
         if not self._export_running or not self._export_pause_event or not self.loop:
             return False
         if not self._export_pause_event.is_set():
             return False
-        
+
         self.loop.call_soon_threadsafe(self._export_pause_event.clear)
-        self._emit("status", message="Export paused")
-        self._emit("log", message="Export paused")
+        self._emit("status", message="Экспорт приостановлен")
+        self._emit("log", message="Экспорт приостановлен")
         self._emit("export_state", state="paused")
         return True
 
@@ -501,10 +501,10 @@ class Worker:
             return False
         if self._export_pause_event.is_set():
             return False
-        
+
         self.loop.call_soon_threadsafe(self._export_pause_event.set)
-        self._emit("status", message="Resuming export")
-        self._emit("log", message="Resuming export")
+        self._emit("status", message="Возобновление экспорта")
+        self._emit("log", message="Возобновление экспорта")
         self._emit("export_state", state="resumed")
         return True
 
@@ -513,14 +513,14 @@ class Worker:
             return False
         if self._export_finish_requested:
             return False
-        
+
         self._export_finish_requested = True
         self.loop.call_soon_threadsafe(self._export_cancel_event.set)
         if self._export_pause_event:
             self.loop.call_soon_threadsafe(self._export_pause_event.set)
-        
-        self._emit("log", message="Finishing export with current data...")
-        self._emit("status", message="Finalizing export")
+
+        self._emit("log", message="Завершаем экспорт с текущими данными...")
+        self._emit("status", message="Финализация экспорта")
         self._emit("export_state", state="finish_requested")
         return True
 
@@ -537,14 +537,14 @@ class Worker:
         result = await fut
         self._pending_inputs.discard(fut)
         if result is None:
-            raise RuntimeError("Input cancelled by user")
+            raise RuntimeError("Ввод отменен пользователем")
         return result.strip()
 
     async def _request_code(self, prompt: str) -> str:
-        return await self._run_input_dialog(prompt, "Verification code")
+        return await self._run_input_dialog(prompt, "Код подтверждения")
 
     async def _request_password(self, prompt: str) -> str:
-        return await self._run_input_dialog(prompt, "2FA password", secret=True)
+        return await self._run_input_dialog(prompt, "Пароль 2FA", secret=True)
 
     async def _send_dialogs(self) -> None:
         dialogs = await list_user_dialogs(self.client)
@@ -573,8 +573,8 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Telegram Export Studio")
-        self.geometry("1180x720")
-        self.minsize(1100, 700)
+        self.geometry("1200x780")
+        self.minsize(1000, 700)
 
         # Иконка окна
         try:
@@ -643,34 +643,44 @@ class App(tk.Tk):
             is_dark = False
 
         if is_dark:
+            # Telegram Dark Theme 2025
             colors = {
-                "window": "#172B4D",
-                "card": "#1F355A",
-                "glass": "#243C63",
-                "accent": "#27B0FF",
-                "accent_hover": "#3BC3FF",
-                "accent_active": "#1993D6",
-                "accent_contrast": "#071522",
-                "text": "#E6F0FF",
-                "muted": "#94A3B8",
-                "border": "#26446B",
-                "entry_bg": "#1F355A",
-                "entry_focus": "#274972",
+                "window": "#0E1621",
+                "card": "#1C2533",
+                "glass": "#151E2B",
+                "accent": "#2AABEE",
+                "accent_hover": "#3FB5F0",
+                "accent_active": "#1E8DD6",
+                "accent_contrast": "#FFFFFF",
+                "text": "#FFFFFF",
+                "text_secondary": "#8E9AAF",
+                "muted": "#6C7883",
+                "border": "#2B3544",
+                "entry_bg": "#1C2533",
+                "entry_focus": "#242F3D",
+                "success": "#4DCD5E",
+                "warning": "#F5A623",
+                "danger": "#E53935",
             }
         else:
+            # Telegram Light Theme 2025
             colors = {
-                "window": "#F4F8FB",
+                "window": "#FFFFFF",
                 "card": "#FFFFFF",
-                "glass": "#FFFFFF",
-                "accent": "#229ED9",
-                "accent_hover": "#33B8EE",
-                "accent_active": "#1B86B8",
+                "glass": "#F4F5F7",
+                "accent": "#2AABEE",
+                "accent_hover": "#3FB5F0",
+                "accent_active": "#1E8DD6",
                 "accent_contrast": "#FFFFFF",
-                "text": "#1F2D3D",
-                "muted": "#6E7C87",
-                "border": "#DBE4EA",
-                "entry_bg": "#FFFFFF",
-                "entry_focus": "#E6F5FF",
+                "text": "#000000",
+                "text_secondary": "#707579",
+                "muted": "#A0A7AF",
+                "border": "#E4E7EB",
+                "entry_bg": "#F4F5F7",
+                "entry_focus": "#FFFFFF",
+                "success": "#4DCD5E",
+                "warning": "#F5A623",
+                "danger": "#E53935",
             }
 
         style = ttk.Style()
@@ -679,40 +689,105 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        style.configure(".", background=colors["window"], foreground=colors["text"], font=("Inter", 11))
+        # Базовые стили
+        style.configure(".", background=colors["window"], foreground=colors["text"], font=("Segoe UI", 10))
+
+        # Карточки с тенью (эмуляция)
         style.configure("Card.TFrame", background=colors["card"], relief="flat", borderwidth=0)
         style.configure("Glass.TFrame", background=colors["glass"], relief="flat", borderwidth=0)
         style.configure("CardInner.TFrame", background=colors["card"], relief="flat", borderwidth=0)
-        style.configure("Header.TLabel", background=colors["glass"], foreground=colors["text"], font=("Inter", 20, "bold"))
-        style.configure("Title.TLabel", background=colors["card"], foreground=colors["text"], font=("Inter", 15, "semibold"))
-        style.configure("Info.TLabel", background=colors["card"], foreground=colors["muted"], font=("Inter", 10))
-        style.configure("Body.TLabel", background=colors["card"], foreground=colors["text"], font=("Inter", 11))
-        style.configure("Caption.TLabel", background=colors["glass"], foreground=colors["muted"], font=("Inter", 11))
-        style.configure("Accent.TButton", background=colors["accent"], foreground=colors["accent_contrast"], padding=(16, 8), borderwidth=0)
-        style.map(
-            "Accent.TButton",
-            background=[("active", colors["accent_hover"]), ("pressed", colors["accent_active"]), ("disabled", colors["border"])],
-            foreground=[("disabled", colors["muted"])]
-        )
-        style.configure("Secondary.TButton", background=colors["card"], foreground=colors["text"], padding=(14, 8), borderwidth=1, relief="solid", bordercolor=colors["border"])
-        style.map(
-            "Secondary.TButton",
-            background=[("active", colors["entry_focus"]), ("pressed", colors["entry_focus"]), ("disabled", colors["card"])],
-            foreground=[("disabled", colors["muted"])]
-        )
-        style.configure("Ghost.TButton", background=colors["card"], foreground=colors["accent"], padding=(12, 8), borderwidth=0)
-        style.map("Ghost.TButton", foreground=[("active", colors["accent_hover"]), ("pressed", colors["accent_active"]), ("disabled", colors["muted"])])
-        style.configure("TCheckbutton", background=colors["card"], foreground=colors["text"], focuscolor=colors["accent"])
-        style.map("TCheckbutton", foreground=[("disabled", colors["muted"])])
-        style.configure("TEntry", fieldbackground=colors["entry_bg"], bordercolor=colors["border"], lightcolor=colors["accent"], darkcolor=colors["border"], insertcolor=colors["accent"], padding=6)
-        style.map("TEntry", fieldbackground=[("focus", colors["entry_focus"])], bordercolor=[("focus", colors["accent"])])
-        style.configure("Accent.Horizontal.TProgressbar", troughcolor=colors["card"], background=colors["accent"], bordercolor=colors["card"], lightcolor=colors["accent"], darkcolor=colors["accent"])
-        style.configure("TSeparator", background=colors["border"])
 
-        self.option_add("*Font", "Inter 11")
-        self.option_add("*TEntry*Font", "Inter 11")
-        self.option_add("*TButton*Font", "Inter 11")
-        self.option_add("*TLabel*Font", "Inter 11")
+        # Типографика Telegram 2025
+        style.configure("Header.TLabel", background=colors["glass"], foreground=colors["text"], font=("Segoe UI", 22, "bold"))
+        style.configure("Title.TLabel", background=colors["card"], foreground=colors["text"], font=("Segoe UI", 14, "bold"))
+        style.configure("Info.TLabel", background=colors["card"], foreground=colors["muted"], font=("Segoe UI", 9))
+        style.configure("Body.TLabel", background=colors["card"], foreground=colors["text"], font=("Segoe UI", 10, "bold"))
+        style.configure("Caption.TLabel", background=colors["glass"], foreground=colors["text_secondary"], font=("Segoe UI", 10))
+
+        # Кнопки в стиле Telegram (жирный шрифт)
+        style.configure("Accent.TButton",
+            background=colors["accent"],
+            foreground=colors["accent_contrast"],
+            padding=(20, 10),
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map("Accent.TButton",
+            background=[("active", colors["accent_hover"]), ("pressed", colors["accent_active"]), ("disabled", colors["muted"])],
+            foreground=[("disabled", "#FFFFFF")]
+        )
+
+        style.configure("Secondary.TButton",
+            background=colors["entry_bg"],
+            foreground=colors["text"],
+            padding=(18, 10),
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map("Secondary.TButton",
+            background=[("active", colors["border"]), ("pressed", colors["border"]), ("disabled", colors["entry_bg"])],
+            foreground=[("disabled", colors["muted"])]
+        )
+
+        style.configure("Ghost.TButton",
+            background=colors["card"],
+            foreground=colors["accent"],
+            padding=(16, 10),
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map("Ghost.TButton",
+            foreground=[("active", colors["accent_hover"]), ("pressed", colors["accent_active"]), ("disabled", colors["muted"])]
+        )
+
+        # Чекбоксы
+        style.configure("TCheckbutton",
+            background=colors["card"],
+            foreground=colors["text"],
+            focuscolor=colors["accent"],
+            font=("Segoe UI", 10)
+        )
+        style.map("TCheckbutton", foreground=[("disabled", colors["muted"])])
+
+        # Поля ввода
+        style.configure("TEntry",
+            fieldbackground=colors["entry_bg"],
+            bordercolor=colors["border"],
+            lightcolor=colors["border"],
+            darkcolor=colors["border"],
+            insertcolor=colors["accent"],
+            padding=10,
+            relief="flat"
+        )
+        style.map("TEntry",
+            fieldbackground=[("focus", colors["entry_focus"])],
+            bordercolor=[("focus", colors["accent"])],
+            lightcolor=[("focus", colors["accent"])],
+            darkcolor=[("focus", colors["accent"])]
+        )
+
+        # Прогресс-бар
+        style.configure("Accent.Horizontal.TProgressbar",
+            troughcolor=colors["entry_bg"],
+            background=colors["accent"],
+            bordercolor=colors["entry_bg"],
+            lightcolor=colors["accent"],
+            darkcolor=colors["accent"],
+            thickness=6
+        )
+
+        # Разделители в стиле Telegram (голубые)
+        style.configure("TSeparator", background=colors["accent"])
+        style.configure("TelegramBlue.TSeparator", background=colors["accent"])
+
+        # Шрифты по умолчанию
+        self.option_add("*Font", "{Segoe UI} 10")
+        self.option_add("*TEntry*Font", "{Segoe UI} 10")
+        self.option_add("*TButton*Font", "{Segoe UI} 10 bold")
+        self.option_add("*TLabel*Font", "{Segoe UI} 10")
 
         return colors
 
@@ -721,21 +796,34 @@ class App(tk.Tk):
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        header = ttk.Frame(self, style="Glass.TFrame", padding=(24, 20))
-        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 12))
+        # Хедер с большими отступами
+        header = ttk.Frame(self, style="Glass.TFrame", padding=(32, 24))
+        header.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
         header.columnconfigure(1, weight=1)
-        header.columnconfigure(2, weight=0)
         self._build_header(header)
 
+        # Карточки с разделителями
         cards_frame = ttk.Frame(self, style="CardInner.TFrame")
-        cards_frame.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 12))
-        cards_frame.columnconfigure(0, weight=1)
-        cards_frame.columnconfigure(1, weight=1)
-        cards_frame.columnconfigure(2, weight=1)
+        cards_frame.grid(row=1, column=0, sticky="nsew", padx=32, pady=(16, 16))
+        cards_frame.columnconfigure(0, weight=1)  # Connect card
+        cards_frame.columnconfigure(1, weight=0)  # Separator 1
+        cards_frame.columnconfigure(2, weight=1)  # Channels card
+        cards_frame.columnconfigure(3, weight=0)  # Separator 2
+        cards_frame.columnconfigure(4, weight=1)  # Export card
         cards_frame.rowconfigure(0, weight=1)
 
         self._build_connect_card(cards_frame)
+
+        # Разделитель 1 (голубая линия Telegram)
+        sep1_frame = tk.Frame(cards_frame, width=2, bg=self.colors["accent"])
+        sep1_frame.grid(row=0, column=1, sticky="ns", padx=12)
+
         self._build_channel_card(cards_frame)
+
+        # Разделитель 2 (голубая линия Telegram)
+        sep2_frame = tk.Frame(cards_frame, width=2, bg=self.colors["accent"])
+        sep2_frame.grid(row=0, column=3, sticky="ns", padx=12)
+
         self._build_export_card(cards_frame)
 
         self._build_logs_card()
@@ -750,76 +838,91 @@ class App(tk.Tk):
             logo_canvas._logo_photo = photo
         
         ttk.Label(parent, text="Telegram Export Studio", style="Header.TLabel").grid(row=0, column=1, sticky="w", columnspan=2)
-        ttk.Label(parent, text="Connect your private channels and archive everything with a single click.", style="Caption.TLabel").grid(row=1, column=1, sticky="w", pady=(4, 0), columnspan=2)
+        ttk.Label(parent, text="Подключите свои приватные каналы и архивируйте всё в один клик.", style="Caption.TLabel").grid(row=1, column=1, sticky="w", pady=(4, 0), columnspan=2)
 
     def _build_connect_card(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=20)
-        card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        card = ttk.Frame(parent, style="Card.TFrame", padding=24)
+        card.grid(row=0, column=0, sticky="nsew", padx=0)
         card.columnconfigure(0, weight=1)
 
-        ttk.Label(card, text="Connect", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(card, text="Use your Telegram API credentials to authorize.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 16))
+        ttk.Label(card, text="Подключение", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(card, text="Используйте ваши Telegram API данные для авторизации.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 20))
 
-        # API ID
-        ttk.Label(card, text="API ID", style="Body.TLabel").grid(row=2, column=0, sticky="w")
-        self.api_id_entry = ttk.Entry(card, show='•')
-        self.api_id_entry.grid(row=3, column=0, sticky="ew", pady=(4, 12))
-        
-        # Bind to SecureVar
-        def on_api_id_change(*args):
-            self.api_id_var.set(self.api_id_entry.get())
-        self.api_id_entry.bind('<KeyRelease>', on_api_id_change)
+        # Keyboard layout fix: use keycode instead of keysym for Ctrl+V/C/X
+        def copy_paste_handler(e):
+            """Handle copy/paste/cut regardless of keyboard layout"""
+            if e.keycode == 86 and e.keysym != 'v':  # Ctrl+V
+                e.widget.event_generate('<<Paste>>')
+            elif e.keycode == 67 and e.keysym != 'c':  # Ctrl+C
+                e.widget.event_generate('<<Copy>>')
+            elif e.keycode == 88 and e.keysym != 'x':  # Ctrl+X
+                e.widget.event_generate('<<Cut>>')
 
-        # API Hash
-        ttk.Label(card, text="API Hash", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        self.api_hash_entry = ttk.Entry(card, show='•')
-        self.api_hash_entry.grid(row=5, column=0, sticky="ew", pady=(4, 12))
-        
-        def on_api_hash_change(*args):
-            self.api_hash_var.set(self.api_hash_entry.get())
-        self.api_hash_entry.bind('<KeyRelease>', on_api_hash_change)
+        # API ID (использует textvariable для автоматической синхронизации)
+        ttk.Label(card, text="API ID", style="Body.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 6))
+        self.api_id_internal = tk.StringVar()
+        self.api_id_entry = ttk.Entry(card, show='•', textvariable=self.api_id_internal)
+        self.api_id_entry.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+        self.api_id_entry.bind("<Control-Key>", copy_paste_handler)
+        # Синхронизация с SecureVar при любом изменении
+        def sync_api_id(*_args):
+            self.api_id_var.set(self.api_id_internal.get())
+        self.api_id_internal.trace_add('write', sync_api_id)
 
-        # Phone
-        ttk.Label(card, text="Phone number", style="Body.TLabel").grid(row=6, column=0, sticky="w")
-        self.phone_entry = ttk.Entry(card)
-        self.phone_entry.grid(row=7, column=0, sticky="ew", pady=(4, 12))
-        
-        def on_phone_change(*args):
-            self.phone_var.set(self.phone_entry.get())
-        self.phone_entry.bind('<KeyRelease>', on_phone_change)
+        # API Hash (использует textvariable для автоматической синхронизации)
+        ttk.Label(card, text="API Hash", style="Body.TLabel").grid(row=4, column=0, sticky="w", pady=(0, 6))
+        self.api_hash_internal = tk.StringVar()
+        self.api_hash_entry = ttk.Entry(card, show='•', textvariable=self.api_hash_internal)
+        self.api_hash_entry.grid(row=5, column=0, sticky="ew", pady=(0, 16))
+        self.api_hash_entry.bind("<Control-Key>", copy_paste_handler)
+        # Синхронизация с SecureVar при любом изменении
+        def sync_api_hash(*_args):
+            self.api_hash_var.set(self.api_hash_internal.get())
+        self.api_hash_internal.trace_add('write', sync_api_hash)
+
+        # Phone (использует textvariable для автоматической синхронизации)
+        ttk.Label(card, text="Номер телефона", style="Body.TLabel").grid(row=6, column=0, sticky="w", pady=(0, 6))
+        self.phone_internal = tk.StringVar()
+        self.phone_entry = ttk.Entry(card, textvariable=self.phone_internal)
+        self.phone_entry.grid(row=7, column=0, sticky="ew", pady=(0, 16))
+        self.phone_entry.bind("<Control-Key>", copy_paste_handler)
+        # Синхронизация с SecureVar при любом изменении
+        def sync_phone(*_args):
+            self.phone_var.set(self.phone_internal.get())
+        self.phone_internal.trace_add('write', sync_phone)
 
         # Info message
         info_frame = ttk.Frame(card, style="CardInner.TFrame")
-        info_frame.grid(row=8, column=0, sticky="ew", pady=(0, 12))
+        info_frame.grid(row=8, column=0, sticky="ew", pady=(4, 20))
         ttk.Label(
             info_frame,
-            text="🔒 No session files will be saved\nYou'll need to enter code on each launch",
+            text="🔒 Файлы сессий не сохраняются\nВам нужно будет вводить код при каждом запуске",
             style="Info.TLabel",
             justify="left"
         ).grid(row=0, column=0, sticky="w")
 
-        self.connect_button = ttk.Button(card, text="Connect", style="Accent.TButton", command=self._on_connect)
-        self.connect_button.grid(row=10, column=0, sticky="ew", pady=(18, 0))
+        self.connect_button = ttk.Button(card, text="Подключиться", style="Accent.TButton", command=self._on_connect)
+        self.connect_button.grid(row=10, column=0, sticky="ew", pady=(0, 0))
 
     def _build_channel_card(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=20)
-        card.grid(row=0, column=1, sticky="nsew", padx=12)
+        card = ttk.Frame(parent, style="Card.TFrame", padding=24)
+        card.grid(row=0, column=2, sticky="nsew", padx=0)
         card.columnconfigure(0, weight=1)
         card.rowconfigure(3, weight=1)
 
-        ttk.Label(card, text="Channels", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(card, text="Select a chat to archive.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 16))
+        ttk.Label(card, text="Каналы", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(card, text="Выберите чат для архивации.", style="Info.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 20))
 
         search_row = ttk.Frame(card, style="CardInner.TFrame")
         search_row.grid(row=2, column=0, sticky="ew")
         search_row.columnconfigure(0, weight=1)
         self.search_entry = ttk.Entry(search_row, textvariable=self.search_var)
-        self.search_entry.grid(row=0, column=0, sticky="ew")
-        self.refresh_button = ttk.Button(search_row, text="Refresh", style="Secondary.TButton", command=self._on_refresh)
-        self.refresh_button.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self.search_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.refresh_button = ttk.Button(search_row, text="Обновить", style="Secondary.TButton", command=self._on_refresh)
+        self.refresh_button.grid(row=0, column=1, sticky="ew")
 
         list_container = ttk.Frame(card, style="CardInner.TFrame")
-        list_container.grid(row=3, column=0, sticky="nsew", pady=(16, 0))
+        list_container.grid(row=3, column=0, sticky="nsew", pady=(12, 12))
         list_container.columnconfigure(0, weight=1)
         list_container.rowconfigure(0, weight=1)
 
@@ -830,50 +933,51 @@ class App(tk.Tk):
             exportselection=False,
             borderwidth=0,
             highlightthickness=0,
-            font=("Inter", 11),
+            font=("Segoe UI", 10),
             bg=self.colors["card"],
             fg=self.colors["text"],
             selectbackground=self.colors["accent"],
             selectforeground=self.colors["accent_contrast"],
         )
         self.dialog_list.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.dialog_list.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.dialog_list.configure(yscrollcommand=scroll.set)
 
-        ttk.Label(card, text="Connected chats appear here once authorized.", style="Info.TLabel").grid(row=4, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(card, text="Подключенные чаты появятся здесь после авторизации.", style="Info.TLabel").grid(row=4, column=0, sticky="w", pady=(12, 0))
 
     def _build_export_card(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=20)
-        card.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
+        card = ttk.Frame(parent, style="Card.TFrame", padding=24)
+        card.grid(row=0, column=4, sticky="nsew", padx=0)
         card.columnconfigure(0, weight=1)
 
-        ttk.Label(card, text="Export", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(card, text="Экспорт", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
         self.channel_label = ttk.Label(card, textvariable=self.channel_title_var, style="Info.TLabel")
-        self.channel_label.grid(row=1, column=0, sticky="w", pady=(4, 12))
+        self.channel_label.grid(row=1, column=0, sticky="w", pady=(0, 20))
 
-        ttk.Checkbutton(card, text="Block risky attachments", variable=self.block_dangerous_var).grid(row=2, column=0, sticky="w", pady=(8, 16))
+        ttk.Checkbutton(card, text="Блокировать опасные вложения", variable=self.block_dangerous_var).grid(row=2, column=0, sticky="w", pady=(0, 20))
 
-        ttk.Label(card, text="Batch size", style="Body.TLabel").grid(row=3, column=0, sticky="w")
+        ttk.Label(card, text="Размер пакета", style="Body.TLabel").grid(row=3, column=0, sticky="w", pady=(0, 6))
         self.batch_entry = ttk.Entry(card, textvariable=self.batch_var, width=8)
-        self.batch_entry.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self.batch_entry.grid(row=4, column=0, sticky="w", pady=(0, 20))
 
         self.progress_bar = ttk.Progressbar(card, style="Accent.Horizontal.TProgressbar", mode="determinate")
-        self.progress_bar.grid(row=5, column=0, sticky="ew", pady=(24, 8))
-        ttk.Label(card, textvariable=self.stats_var, style="Info.TLabel").grid(row=6, column=0, sticky="w")
+        self.progress_bar.grid(row=5, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(card, textvariable=self.stats_var, style="Info.TLabel").grid(row=6, column=0, sticky="w", pady=(0, 24))
 
         self.export_controls_frame = ttk.Frame(card, style="CardInner.TFrame")
-        self.export_controls_frame.grid(row=7, column=0, sticky="ew", pady=(24, 0))
+        self.export_controls_frame.grid(row=7, column=0, sticky="ew", pady=(0, 0))
         self.export_controls_frame.columnconfigure(0, weight=1)
-        self.export_controls_frame.columnconfigure(1, weight=1)
-        self.export_controls_frame.columnconfigure(2, weight=1)
 
-        self.start_button = ttk.Button(self.export_controls_frame, text="Start export", style="Accent.TButton", command=self._on_export)
-        self.start_button.grid(row=0, column=0, sticky="ew")
-        self.pause_button = ttk.Button(self.export_controls_frame, text="Pause", style="Secondary.TButton", command=self._on_pause_resume)
-        self.pause_button.grid(row=0, column=1, sticky="ew", padx=12)
-        self.finish_button = ttk.Button(self.export_controls_frame, text="Finish now", style="Secondary.TButton", command=self._on_finish)
-        self.finish_button.grid(row=0, column=2, sticky="ew")
+        self.start_button = ttk.Button(self.export_controls_frame, text="Начать экспорт", style="Accent.TButton", command=self._on_export)
+        self.start_button.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
+        buttons_row = ttk.Frame(self.export_controls_frame, style="CardInner.TFrame")
+        buttons_row.grid(row=1, column=0, sticky="ew")
+        buttons_row.columnconfigure(0, weight=1)
+        buttons_row.columnconfigure(1, weight=1)
+
+        self.pause_button = ttk.Button(buttons_row, text="Пауза", style="Secondary.TButton", command=self._on_pause_resume)
+        self.pause_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.finish_button = ttk.Button(buttons_row, text="Завершить сейчас", style="Secondary.TButton", command=self._on_finish)
+        self.finish_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         self.pause_button.state(["disabled"])
         self.finish_button.state(["disabled"])
@@ -881,29 +985,35 @@ class App(tk.Tk):
         self.completion_frame = ttk.Frame(card, style="CardInner.TFrame")
         self.completion_frame.columnconfigure(0, weight=1)
         self.completion_frame.grid(row=7, column=0, sticky="ew", pady=(24, 0))
-        self.completion_title_var = tk.StringVar(value="Export complete")
-        ttk.Label(self.completion_frame, text="✓", font=("Inter", 26), background=self.colors["card"], foreground=self.colors["accent"]).grid(row=0, column=0, pady=(0, 4))
+        self.completion_title_var = tk.StringVar(value="Экспорт завершен")
+        ttk.Label(self.completion_frame, text="✓", font=("Segoe UI", 26), background=self.colors["card"], foreground=self.colors["accent"]).grid(row=0, column=0, pady=(0, 4))
         ttk.Label(self.completion_frame, textvariable=self.completion_title_var, style="Title.TLabel").grid(row=1, column=0, pady=(0, 4))
-        ttk.Label(self.completion_frame, text="Your archive is ready.", style="Info.TLabel").grid(row=2, column=0)
+        ttk.Label(self.completion_frame, text="Ваш архив готов.", style="Info.TLabel").grid(row=2, column=0)
         completion_buttons = ttk.Frame(self.completion_frame, style="CardInner.TFrame")
         completion_buttons.grid(row=3, column=0, pady=(16, 0))
-        self.open_folder_button = ttk.Button(completion_buttons, text="Open folder", style="Accent.TButton", command=self._open_last_export)
-        self.open_folder_button.grid(row=0, column=0, padx=(0, 12))
-        self.export_again_button = ttk.Button(completion_buttons, text="Export again", style="Ghost.TButton", command=self._reset_after_completion)
-        self.export_again_button.grid(row=0, column=1)
+        completion_buttons.columnconfigure(0, weight=1)
+        completion_buttons.columnconfigure(1, weight=1)
+        completion_buttons.columnconfigure(2, weight=1)
+        self.open_folder_button = ttk.Button(completion_buttons, text="Открыть папку", style="Accent.TButton", command=self._open_last_export)
+        self.open_folder_button.grid(row=0, column=0, padx=(0, 8))
+        self.open_html_button = ttk.Button(completion_buttons, text="Открыть HTML", style="Accent.TButton", command=self._open_index_html)
+        self.open_html_button.grid(row=0, column=1, padx=(0, 8))
+        self.export_again_button = ttk.Button(completion_buttons, text="Экспортировать снова", style="Ghost.TButton", command=self._reset_after_completion)
+        self.export_again_button.grid(row=0, column=2)
         self.open_folder_button.state(["disabled"])
+        self.open_html_button.state(["disabled"])
         self.completion_frame.grid_remove()
 
     def _build_logs_card(self) -> None:
-        card = ttk.Frame(self, style="Card.TFrame", padding=20)
-        card.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 24))
+        card = ttk.Frame(self, style="Card.TFrame", padding=24)
+        card.grid(row=2, column=0, sticky="nsew", padx=32, pady=(0, 32))
         card.columnconfigure(0, weight=1)
         card.rowconfigure(1, weight=1)
 
-        ttk.Label(card, text="Activity", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(card, text="Активность", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
 
         log_container = ttk.Frame(card, style="CardInner.TFrame")
-        log_container.grid(row=1, column=0, sticky="nsew", pady=(12, 12))
+        log_container.grid(row=1, column=0, sticky="nsew", pady=(16, 0))
         log_container.columnconfigure(0, weight=1)
         log_container.rowconfigure(0, weight=1)
 
@@ -911,18 +1021,15 @@ class App(tk.Tk):
             log_container,
             wrap="word",
             state="disabled",
-            height=10,
-            bg=self.colors["card"],
+            height=8,
+            bg=self.colors["entry_bg"],
             fg=self.colors["text"],
             relief="flat",
             highlightthickness=0,
-            font=("Inter", 10),
+            font=("Consolas", 9),
             insertbackground=self.colors["accent"],
         )
         self.log_text.grid(row=0, column=0, sticky="nsew")
-        log_scroll = ttk.Scrollbar(log_container, orient="vertical", command=self.log_text.yview)
-        log_scroll.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.tag_configure("timestamp", foreground=self.colors["muted"])
         self.log_text.tag_configure("message", foreground=self.colors["text"])
 
@@ -986,35 +1093,35 @@ class App(tk.Tk):
                 self._append_log(msg)
         
         elif etype == "error":
-            msg = event.get("message", "Unexpected error")
-            self._append_log(f"[Error] {msg}")
-            messagebox.showerror("Error", msg[:200], parent=self)  # Limit error message length
-            self.status_var.set("Error")
+            msg = event.get("message", "Неожиданная ошибка")
+            self._append_log(f"[Ошибка] {msg}")
+            messagebox.showerror("Ошибка", msg[:200], parent=self)  # Limit error message length
+            self.status_var.set("Ошибка")
             self.export_running = False
             self.export_paused = False
             self._set_progress_running(False)
             self._show_controls_view()
             self._update_export_controls()
-        
+
         elif etype == "dialogs":
             self.all_dialogs = event.get("items", [])
             self._apply_filter()
-        
+
         elif etype == "progress":
             count = event.get("count", 0)
-            channel = event.get("channel") or "Channel"
+            channel = event.get("channel") or "Канал"
             # Sanitize channel name
             safe_channel = channel[:50] if len(channel) > 50 else channel
-            self.stats_var.set(f"{safe_channel}: {count} messages saved")
-        
+            self.stats_var.set(f"{safe_channel}: {count} сообщений сохранено")
+
         elif etype == "export_done":
             self._last_export_info = event
             html = event.get("html_path")
-            channel = event.get("channel") or "Channel"
+            channel = event.get("channel") or "Канал"
             if html:
                 self.last_export_html = html
                 self.last_export_dir = os.path.dirname(html)
-            self._append_log(f"[Done] {channel[:50]} -> {html}")
+            self._append_log(f"[Готово] {channel[:50]} -> {html}")
         
         elif etype == "status":
             message = event.get("message", "")
@@ -1055,7 +1162,7 @@ class App(tk.Tk):
             self.export_paused = False
             self._set_progress_running(False)
             self._show_controls_view()
-            self.status_var.set("Export cancelled")
+            self.status_var.set("Экспорт отменен")
         
         elif state == "completed":
             self.export_finishing = False
@@ -1074,8 +1181,8 @@ class App(tk.Tk):
         self._update_export_controls()
 
     def _handle_input_request(self, event: dict[str, Any]) -> None:
-        prompt = event.get("prompt") or "Enter value"
-        title = event.get("title") or "Input"
+        prompt = event.get("prompt") or "Введите значение"
+        title = event.get("title") or "Ввод"
         secret = bool(event.get("secret"))
         fut = event.get("future")
         
@@ -1122,8 +1229,8 @@ class App(tk.Tk):
             result['value'] = None
             top.destroy()
 
-        ttk.Button(button_row, text='Cancel', style='Secondary.TButton', command=cancel).grid(row=0, column=0, sticky='ew', padx=(0, 12))
-        ttk.Button(button_row, text='OK', style='Accent.TButton', command=submit).grid(row=0, column=1, sticky='ew')
+        ttk.Button(button_row, text='Отмена', style='Secondary.TButton', command=cancel).grid(row=0, column=0, sticky='ew', padx=(0, 12))
+        ttk.Button(button_row, text='ОК', style='Accent.TButton', command=submit).grid(row=0, column=1, sticky='ew')
 
         top.bind('<Return>', lambda _: submit())
         top.bind('<Escape>', lambda _: cancel())
@@ -1164,8 +1271,8 @@ class App(tk.Tk):
             self.after(0, self._on_exit)
 
         menu = pystray.Menu(
-            pystray.MenuItem('Show window', on_show),
-            pystray.MenuItem('Exit', on_exit),
+            pystray.MenuItem('Показать окно', on_show, default=True),
+            pystray.MenuItem('Выход и очистка данных', on_exit),
         )
         self._tray_icon = pystray.Icon('tg-export', image, 'Telegram Export Studio', menu)
 
@@ -1197,28 +1304,39 @@ class App(tk.Tk):
 
     def _minimize_to_tray(self) -> None:
         if pystray is None or Image is None or ImageDraw is None:
-            messagebox.showinfo('Tray unavailable', 'pystray and Pillow are required for tray mode. Minimizing to taskbar instead.', parent=self)
+            messagebox.showinfo('Трей недоступен', 'Требуются pystray и Pillow для режима трея. Сворачиваю в панель задач.', parent=self)
             self.iconify()
-            self.status_var.set('Minimized to taskbar (tray disabled)')
+            self.status_var.set('Свернуто в панель задач (трей отключен)')
             return
         self.withdraw()
         self._start_tray_icon()
-        self.status_var.set('Running in tray…')
+        self.status_var.set('Работает в трее…')
 
     def _on_exit(self) -> None:
-        # Secure cleanup
+        """Secure cleanup on exit"""
+        # Clear SecureVar objects
         try:
             self.api_id_var.clear()
             self.api_hash_var.clear()
             self.phone_var.clear()
         except Exception:
             pass
-        
+
+        # Clear Entry widgets from memory
+        try:
+            self.api_id_entry.delete(0, 'end')
+            self.api_hash_entry.delete(0, 'end')
+            self.phone_entry.delete(0, 'end')
+        except Exception:
+            pass
+
+        # Stop background services
         self._stop_tray_icon()
         try:
             self.worker.send_command('stop')
         except Exception:
             pass
+
         self.after(200, self.destroy)
 
     def _set_progress_running(self, running: bool) -> None:
@@ -1236,15 +1354,17 @@ class App(tk.Tk):
 
     def _show_completion_view(self, info: Optional[dict[str, Any]] = None) -> None:
         info = info or {}
-        channel = info.get("channel") or "Export complete"
+        channel = info.get("channel") or "Экспорт завершен"
         # Sanitize channel name
         safe_channel = channel[:50] if len(channel) > 50 else channel
-        self.completion_title_var.set(f"{safe_channel} exported")
-        
+        self.completion_title_var.set(f"{safe_channel} экспортирован")
+
         if self.last_export_dir and os.path.isdir(self.last_export_dir):
             self.open_folder_button.state(["!disabled"])
+            self.open_html_button.state(["!disabled"])
         else:
             self.open_folder_button.state(["disabled"])
+            self.open_html_button.state(["disabled"])
         
         self.export_controls_frame.grid_remove()
         self.completion_frame.grid()
@@ -1253,6 +1373,7 @@ class App(tk.Tk):
         self.completion_frame.grid_remove()
         self.export_controls_frame.grid()
         self.open_folder_button.state(["disabled"])
+        self.open_html_button.state(["disabled"])
 
     def _update_export_controls(self) -> None:
         if self.export_running:
@@ -1262,7 +1383,7 @@ class App(tk.Tk):
                 self.finish_button.state(["disabled"])
             else:
                 self.finish_button.state(["!disabled"])
-            self.pause_button.configure(text="Resume" if self.export_paused else "Pause")
+            self.pause_button.configure(text="Продолжить" if self.export_paused else "Пауза")
         else:
             selection = bool(self.dialog_list.curselection())
             if selection:
@@ -1271,53 +1392,53 @@ class App(tk.Tk):
                 self.start_button.state(["disabled"])
             self.pause_button.state(["disabled"])
             self.finish_button.state(["disabled"])
-            self.pause_button.configure(text="Pause")
+            self.pause_button.configure(text="Пауза")
 
     def _on_connect(self) -> None:
         # Get and validate API ID
         api_id_str = self.api_id_var.get().strip()
         if not api_id_str:
-            messagebox.showerror("Error", "Enter a valid API ID", parent=self)
+            messagebox.showerror("Ошибка", "Введите корректный API ID", parent=self)
             return
-        
+
         try:
             api_id = int(api_id_str)
             if api_id <= 0:
-                raise ValueError("API ID must be positive")
+                raise ValueError("API ID должен быть положительным числом")
         except ValueError:
-            messagebox.showerror("Error", "API ID must be a valid positive integer", parent=self)
+            messagebox.showerror("Ошибка", "API ID должен быть положительным целым числом", parent=self)
             return
-        
+
         # Validate API Hash
         api_hash = self.api_hash_var.get().strip()
         if not api_hash:
-            messagebox.showerror("Error", "API Hash is required", parent=self)
+            messagebox.showerror("Ошибка", "API Hash обязателен", parent=self)
             return
-        
+
         if len(api_hash) != 32 or not all(c in '0123456789abcdefABCDEF' for c in api_hash):
             response = messagebox.askyesno(
-                "Warning",
-                "API Hash format looks unusual (expected 32 hex characters). Continue anyway?",
+                "Предупреждение",
+                "Формат API Hash выглядит необычно (ожидается 32 hex символа). Продолжить?",
                 parent=self
             )
             if not response:
                 return
-        
+
         # Validate phone
         phone = self.phone_var.get().strip()
         if not phone:
-            messagebox.showerror("Error", "Phone number is required", parent=self)
+            messagebox.showerror("Ошибка", "Номер телефона обязателен", parent=self)
             return
-        
+
         if not phone.startswith('+'):
-            messagebox.showerror("Error", "Phone number must start with + (e.g. +1234567890)", parent=self)
+            messagebox.showerror("Ошибка", "Номер телефона должен начинаться с + (например +1234567890)", parent=self)
             return
-        
+
         if not phone[1:].replace(' ', '').isdigit():
-            messagebox.showerror("Error", "Phone number must contain only digits after +", parent=self)
+            messagebox.showerror("Ошибка", "Номер телефона должен содержать только цифры после +", parent=self)
             return
-        
-        self.status_var.set("Connecting...")
+
+        self.status_var.set("Подключение...")
         self.worker.send_command(
             "connect",
             api_id=api_id,
@@ -1332,33 +1453,33 @@ class App(tk.Tk):
     def _on_export(self) -> None:
         if self.export_running:
             return
-        
+
         selection = self.dialog_list.curselection()
         if not selection:
-            messagebox.showwarning("Attention", "Select at least one channel", parent=self)
+            messagebox.showwarning("Внимание", "Выберите хотя бы один канал", parent=self)
             return
-        
+
         dialog_indices = [self.filtered_indices[i] for i in selection]
         refresh_seconds = None
-        
+
         # Validate batch size
         try:
             batch_value = int(self.batch_var.get().strip())
             if batch_value <= 0:
-                raise ValueError("Batch size must be positive")
+                raise ValueError("Размер пакета должен быть положительным")
             if batch_value > 1000:
                 response = messagebox.askyesno(
-                    "Warning",
-                    "Very large batch size may cause memory issues. Continue?",
+                    "Предупреждение",
+                    "Очень большой размер пакета может вызвать проблемы с памятью. Продолжить?",
                     parent=self
                 )
                 if not response:
                     return
         except ValueError as e:
-            messagebox.showerror("Error", f"Invalid batch size: {e}", parent=self)
+            messagebox.showerror("Ошибка", f"Неверный размер пакета: {e}", parent=self)
             return
-        
-        self.stats_var.set("Messages saved: 0")
+
+        self.stats_var.set("Сообщений сохранено: 0")
         self._show_controls_view()
         
         self.worker.send_command(
@@ -1393,35 +1514,65 @@ class App(tk.Tk):
 
     def _open_last_export(self) -> None:
         if not self.last_export_dir or not os.path.isdir(self.last_export_dir):
-            messagebox.showinfo("Open folder", "Export directory is not available yet.", parent=self)
+            messagebox.showinfo("Открыть папку", "Директория экспорта пока недоступна.", parent=self)
             return
-        
+
         # SECURITY: Validate path before opening
         try:
             # Check if path is within expected export directory
             export_root = os.path.abspath("export")
             target_path = os.path.abspath(self.last_export_dir)
-            
+
             if not target_path.startswith(export_root):
-                messagebox.showerror("Security Error", "Invalid export path", parent=self)
+                messagebox.showerror("Ошибка безопасности", "Неверный путь экспорта", parent=self)
                 return
-            
+
             if sys.platform.startswith("win"):
                 os.startfile(self.last_export_dir)
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", self.last_export_dir])
             else:
                 subprocess.Popen(["xdg-open", self.last_export_dir])
-        
+
         except Exception as exc:
-            messagebox.showerror("Open folder", f"Cannot open folder: {exc}", parent=self)
+            messagebox.showerror("Открыть папку", f"Не удалось открыть папку: {exc}", parent=self)
+
+    def _open_index_html(self) -> None:
+        if not self.last_export_dir or not os.path.isdir(self.last_export_dir):
+            messagebox.showinfo("Открыть HTML", "Директория экспорта пока недоступна.", parent=self)
+            return
+
+        index_html_path = os.path.join(self.last_export_dir, "index.html")
+        if not os.path.isfile(index_html_path):
+            messagebox.showerror("Ошибка", "Файл index.html не найден", parent=self)
+            return
+
+        # SECURITY: Validate path before opening
+        try:
+            # Check if path is within expected export directory
+            export_root = os.path.abspath("export")
+            target_path = os.path.abspath(index_html_path)
+
+            if not target_path.startswith(export_root):
+                messagebox.showerror("Ошибка безопасности", "Неверный путь экспорта", parent=self)
+                return
+
+            if sys.platform.startswith("win"):
+                os.startfile(index_html_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", index_html_path])
+            else:
+                subprocess.Popen(["xdg-open", index_html_path])
+
+        except Exception as exc:
+            messagebox.showerror("Открыть HTML", f"Не удалось открыть файл: {exc}", parent=self)
 
     def _reset_after_completion(self) -> None:
         self._last_export_info = None
         self.last_export_html = None
         self.last_export_dir = None
-        self.stats_var.set("Messages saved: 0")
-        self.status_var.set("Ready")
+        self.stats_var.set("Сообщений сохранено: 0")
+        self.status_var.set("Готов")
         self._show_controls_view()
         self._update_export_controls()
 
@@ -1429,23 +1580,32 @@ class App(tk.Tk):
         selection = self.dialog_list.curselection()
         if not selection:
             if self.filtered_indices:
-                self.channel_title_var.set("Select a channel to export")
+                self.channel_title_var.set("Выберите канал для экспорта")
             else:
-                self.channel_title_var.set("No channels available")
+                self.channel_title_var.set("Каналы недоступны")
         else:
             idx = self.filtered_indices[selection[0]]
             match = next((d for d in self.all_dialogs if d.get("index") == idx), None)
             if match:
-                title = match.get("title") or "Channel"
+                title = match.get("title") or "Канал"
                 # Sanitize title for display
                 safe_title = title[:100] if len(title) > 100 else title
                 self.channel_title_var.set(safe_title)
             else:
-                self.channel_title_var.set("Channel")
+                self.channel_title_var.set("Канал")
         self._update_export_controls()
 
     def _on_close(self) -> None:
-        self._minimize_to_tray()
+        """Handle window close event - minimize to tray if export is running"""
+        # If export is running, minimize to tray to keep it working
+        if self.export_running:
+            self._minimize_to_tray()
+        else:
+            # If nothing is running, ask user what to do
+            if messagebox.askyesno("Выход", "Хотите выйти из приложения?"):
+                self._on_exit()
+            else:
+                self._minimize_to_tray()
 
 
 def main() -> None:

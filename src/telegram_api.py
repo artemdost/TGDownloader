@@ -159,37 +159,37 @@ async def authorize(
             
             # Get verification code
             if code_callback:
-                code = await _request(code_callback, "Enter code from Telegram: ")
+                code = await _request(code_callback, "Введите код из Telegram: ")
             else:
-                code = input("Enter code from Telegram: ").strip()
-            
+                code = input("Введите код из Telegram: ").strip()
+
             if not code:
-                raise ValueError("Telegram code is required")
-            
+                raise ValueError("Требуется код Telegram")
+
             # Validate code format (typically 5 digits)
             if not code.isdigit():
-                raise ValueError("Verification code must contain only digits")
-            
+                raise ValueError("Код подтверждения должен содержать только цифры")
+
             secure_code = SecureString(code)
-            
+
             try:
                 await client.sign_in(phone=secure_phone.get(), code=secure_code.get())
-                log.info("Authorization successful")
+                log.info("Авторизация успешна")
             except SessionPasswordNeededError:
-                log.info("2FA required")
-                
+                log.info("Требуется 2FA")
+
                 # Get 2FA password
                 if password_callback:
-                    pwd = await _request(password_callback, "Enter 2FA password: ")
+                    pwd = await _request(password_callback, "Введите пароль 2FA: ")
                 else:
-                    pwd = getpass.getpass("Enter 2FA password: ")
-                
+                    pwd = getpass.getpass("Введите пароль 2FA: ")
+
                 if not pwd:
-                    raise ValueError("2FA password is required")
-                
+                    raise ValueError("Требуется пароль 2FA")
+
                 secure_password = SecureString(pwd)
                 await client.sign_in(password=secure_password.get())
-                log.info("2FA authorization successful")
+                log.info("2FA авторизация успешна")
 
         return client
     
